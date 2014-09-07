@@ -1,0 +1,8 @@
+{
+  "development": {
+    "jest": "http://github.com/jkroso/jest/tarball/master"
+  },
+  "production": {
+    "URI": "http://github.com/jkroso/URI/tarball/0.0.1"
+  }
+}
