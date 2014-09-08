@@ -14,13 +14,10 @@ const parsers = [
 ##
 # establish a TCPSocket with `uri`
 #
-function connect(uri)
-  if uri.schema != "http"
-    error("Unsupported schema: $(uri.schema)")
-  end
+function connect(uri::URI)
+  @assert uri.schema == "http" "https not yet supported"
   ip = Base.getaddrinfo(uri.host)
-  port = uri.port == 0 ? 80 : uri.port
-  Base.connect(ip, port)
+  Base.connect(ip, uri.port)
 end
 
 typealias Headers Dict{String,String}
