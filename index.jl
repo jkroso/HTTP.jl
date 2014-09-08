@@ -99,6 +99,7 @@ parseURI(uri::String) = begin
     uri.port = uri.schema == "http" ? 80 : 443
   end
   if uri.path == "" uri.path = "/" end
+  if uri.host == "" uri.host = "localhost" end
   uri
 end
 

@@ -15,5 +15,7 @@ end
 
 @async start(app, 8000)
 
+@test get("http://localhost:8000").data == "home"
 @test get("localhost:8000").data == "home"
-@test get("localhost:8000/json").data == {"name" => "jake"}
+@test get(":8000").data == "home"
+@test get(":8000/json").data == {"name" => "jake"}
