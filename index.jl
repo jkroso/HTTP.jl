@@ -73,7 +73,7 @@ function Response(stream::TcpSocket)
     key,value = split(line, ": ")
     meta[key] = value
   end
-  typ = get(meta, "Content-Type", nothing)
+  typ = get(meta, "Content-Type", "")
   typ = split(typ, "; ")[1]
   parse = get(parsers, typ, buffer)
   Response(status, meta, parse(stream, meta))
