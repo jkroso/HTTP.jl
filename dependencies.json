@@ -1,8 +1,9 @@
 {
   "development": {
-    "jest": "http://github.com/jkroso/jest/tarball/master"
+    "jest": "http://github.com/jkroso/jest/tarball/0.0.2",
+    "parse-json": "http://github.com/jkroso/parse-json/tarball/0.1.0"
   },
   "production": {
-    "URI": "http://github.com/jkroso/URI/tarball/0.0.1"
+    "URI": "http://github.com/coiljl/URI/tarball/0.1.2"
   }
 }

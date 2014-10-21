@@ -1,15 +1,11 @@
-import JSON
-import Base: get, put, write, TcpSocket
+import Base.Socket
 @require "URI" URI
 
-export get, post, put, delete, head
-
-##
-# Content-Type specific parsers
-#
-const parsers = [
-  "application/json" => (s, h) -> JSON.parse(buffer(s, h))
-]
+immutable Response
+  status::Int
+  meta::Dict{String,String}
+  data::Any
+end
 
 ##
 # establish a TCPSocket with `uri`
@@ -20,63 +16,50 @@ function connect(uri::URI)
   Base.connect(ip, uri.port)
 end
 
-typealias Headers Dict{String,String}
-
 ##
-# make an HTTP request to `uri` blocking until a response is
+# Make an HTTP request to `uri` blocking until a response is
 # received
 #
-function request(verb::String, uri::URI, headers::Headers, data)
-  stream = connect(uri)
-  write(stream, "$verb $(uri.path) HTTP/1.1")
-  for (key, value) in headers
-    write(stream, "\r\n$key: $value")
+function request(verb, uri::URI, meta::Dict, data)
+  io = connect(uri)
+  write(io, "$verb $(resource(uri)) HTTP/1.1")
+  for (key, value) in meta
+    write(io, "\r\n$key: $value")
   end
-  write(stream, "\r\n" ^ 2)
-  write(stream, data)
-  Response(stream)
+  write(io, "\r\n" ^ 2)
+  write(io, data)
+  Response(io)
 end
 
-##
-# Read all the data from `stream` into a String
-#
-function buffer(stream::TcpSocket, meta::Headers)
-  len = int(get(meta, "Content-Length", -1))
-  if len < 0 len = Inf end
-  out = ""
-  while isopen(stream)
-    out *= readavailable(stream)
-    if length(out) >= len
-      close(stream)
-      break
+function resource(uri::URI)
+  str = uri.path
+  if !isempty(uri.query)
+    str *= "?"
+    for (key, value) in uri.query
+      str *= "$key=$value&"
     end
+    str = str[1:end-1]
   end
-  out
-end
-
-immutable Response
-  status::Int
-  meta::Headers
-  data::Any
+  if !isempty(uri.fragment) str *= "#" * uri.fragment end
+  str
 end
 
 ##
-# Parse a `Response` from a TCPSocket with incomming
-# HTTP data
+# Parse incomming HTTP data into a `Response`
 #
-function Response(stream::TcpSocket)
-  head = readuntil(stream, "\r\n" ^ 2)
+function Response(io::Socket)
+  head = readuntil(io, "\r\n" ^ 2)
   lines = split(head, "\r\n")
   status = int(lines[1][9:12])
-  meta = Headers()
+  meta = Dict{String,String}()
   for line in lines[2:end-2]
     key,value = split(line, ": ")
     meta[key] = value
   end
-  typ = get(meta, "Content-Type", "")
-  typ = split(typ, "; ")[1]
-  parse = get(parsers, typ, buffer)
-  Response(status, meta, parse(stream, meta))
+  mime = get(meta, "Content-Type", "application/octet-stream")
+  mime = MIME(split(mime, "; ")[1])
+  body = applicable(parse, mime, io) ? parse(mime, io) : io
+  Response(status, meta, body)
 end
 
 ##
@@ -87,7 +70,7 @@ end
 # - port (80 for http and 443 for https)
 # - path ("/")
 #
-parseURI(uri::String) = begin
+function parseURI(uri::String)
   if !ismatch(r"^https?://", uri)
     uri = replace(uri, r"^(//)?", "http://")
   end
@@ -102,13 +85,12 @@ end
 
 ##
 # Create convenience methods for the common HTTP verbs so
-# instead of `request("GET", URI("http://github.com"), Headers(), "")`
-# you can simply write `get("github.com")`
+# you can simply write `GET("github.com")`
 #
-for f in [:get, :post, :put, :delete, :head]
+for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
-    function $f(uri::URI, data::String="", headers::Headers=Headers())
-      request($(uppercase(string(f))), uri, headers, data)
+    function $f(uri::URI, data::String="", meta::Dict=Dict())
+      request($(string(f)), uri, meta, data)
     end
     $f(uri::String) = $f(parseURI(uri))
   end

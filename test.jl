@@ -1,8 +1,9 @@
 using Morsel
 
-@require "." get
+@require "parse-json" parse => parse_json
+@require "." GET
 
-app = Morsel.App()
+app = Morsel.app()
 
 get(app, "/") do req, res
   "home"
@@ -15,7 +16,9 @@ end
 
 @async start(app, 8000)
 
-@test get("http://localhost:8000").data == "home"
-@test get("localhost:8000").data == "home"
-@test get(":8000").data == "home"
-@test get(":8000/json").data == {"name" => "jake"}
+Base.parse(::MIME"application/json", io::IO) = parse_json(readavailable(io))
+
+@test readavailable(GET("http://localhost:8000").data) == "home"
+@test readavailable(GET("localhost:8000").data) == "home"
+@test readavailable(GET(":8000").data) == "home"
+@test GET(":8000/json").data == {"name" => "jake"}
