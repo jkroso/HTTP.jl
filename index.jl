@@ -1,7 +1,6 @@
-import Base.Socket
 @require "URI" URI
 
-immutable Response
+type Response
   status::Int
   meta::Dict{String,String}
   data::Any
@@ -47,7 +46,7 @@ end
 ##
 # Parse incomming HTTP data into a `Response`
 #
-function Response(io::Socket)
+function Response(io::Base.Socket)
   head = readuntil(io, "\r\n" ^ 2)
   lines = split(head, "\r\n")
   status = int(lines[1][9:12])
