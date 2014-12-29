@@ -72,6 +72,9 @@ function Response(io::IO)
   end
   mime = get(meta, "Content-Type", "application/octet-stream")
   mime = MIME(split(mime, "; ")[1])
+  if haskey(meta, "Content-Length")
+    io = truncate(io, int(meta["Content-Length"]))
+  end
   body = applicable(parse, mime, io) ? parse(mime, io) : io
   Response(status, meta, body)
 end
@@ -121,3 +124,27 @@ for f in [:GET, :POST, :PUT, :DELETE]
     $f(uri::String, args...) = $f(parseURI(uri), args...)
   end
 end
+
+##
+# AsyncStream's in Julia don't do a very good job of being API
+# compatible with other types of IO. TruncatedStream is an attempt
+# to rectify this
+#
+type TruncatedStream <: IO
+  stream::Base.AsyncStream
+  nb::Int
+  buff::String
+  cursor::Int
+end
+
+Base.truncate(io::Base.AsyncStream, n::Integer) = TruncatedStream(io, n, "", 0)
+Base.eof(io::TruncatedStream) = io.nb == 0
+Base.read(io::TruncatedStream, ::Type{Uint8}) = begin
+  io.nb -= 1
+  if io.cursor >= length(io.buff)
+    io.buff = readavailable(io.stream)
+    io.cursor = 0
+  end
+  uint8(io.buff[io.cursor += 1])
+end
+# TODO: implement a decent `skip(::TruncatedStream, ::Int)`
