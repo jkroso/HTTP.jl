@@ -98,14 +98,26 @@ function parseURI(uri::String)
 end
 
 ##
+# A suprising number of web servers expect to receive esoteric
+# crap in their HTTP requests so lets send it to everyone so
+# nobody ever needs to think about it
+#
+function with_bs(meta::Dict, uri::URI, data::String)
+  get!(meta, "User-Agent", "Julia")
+  get!(meta, "Host", "$(uri.host):$(uri.port)")
+  isempty(data) || get!(meta, "Content-Length", string(sizeof(data)))
+  meta
+end
+
+##
 # Create convenience methods for the common HTTP verbs so
 # you can simply write `GET("github.com")`
 #
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
     function $f(uri::URI, data::String="", meta::Dict=Dict())
-      request($(string(f)), uri, meta, data)
+      request($(string(f)), uri, with_bs(meta, uri, data), data)
     end
-    $f(uri::String) = $f(parseURI(uri))
+    $f(uri::String, args...) = $f(parseURI(uri), args...)
   end
 end
