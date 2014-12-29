@@ -1,4 +1,5 @@
 @require "URI" URI
+import GnuTLS
 
 type Response
   status::Int
@@ -10,9 +11,23 @@ end
 # establish a TCPSocket with `uri`
 #
 function connect(uri::URI)
-  @assert uri.schema == "http" "https not yet supported"
   ip = Base.getaddrinfo(uri.host)
-  Base.connect(ip, uri.port)
+  sock = Base.connect(ip, uri.port)
+
+  if uri.schema == "http"
+    return sock
+  end
+
+  if uri.schema == "https"
+    stream = GnuTLS.Session()
+    GnuTLS.set_priority_string!(stream)
+    GnuTLS.set_credentials!(stream, GnuTLS.CertificateStore())
+    GnuTLS.associate_stream(stream, sock)
+    GnuTLS.handshake!(stream)
+    return stream
+  end
+
+  error("$(uri.schema) not supported")
 end
 
 ##
@@ -21,11 +36,11 @@ end
 #
 function request(verb, uri::URI, meta::Dict, data)
   io = connect(uri)
-  write(io, "$verb $(resource(uri)) HTTP/1.1")
+  write(io, "$verb $(resource(uri)) HTTP/1.1\n")
   for (key, value) in meta
-    write(io, "\r\n$key: $value")
+    write(io, "$key: $value\n")
   end
-  write(io, "\r\n" ^ 2)
+  write(io, "\n")
   write(io, data)
   Response(io)
 end
@@ -37,7 +52,7 @@ function resource(uri::URI)
     for (key, value) in uri.query
       str *= "$key=$value&"
     end
-    str = str[1:end-1]
+    str = chop(str)
   end
   if !isempty(uri.fragment) str *= "#" * uri.fragment end
   str
@@ -46,12 +61,12 @@ end
 ##
 # Parse incomming HTTP data into a `Response`
 #
-function Response(io::Base.Socket)
-  head = readuntil(io, "\r\n" ^ 2)
-  lines = split(head, "\r\n")
-  status = int(lines[1][9:12])
+function Response(io::IO)
+  status = int(readline(io)[9:12])
   meta = Dict{String,String}()
-  for line in lines[2:end-2]
+  for line in eachline(io)
+    line = strip(line)
+    line == "" && break
     key,value = split(line, ": ")
     meta[key] = value
   end
