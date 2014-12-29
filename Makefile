@@ -5,4 +5,11 @@ dependencies: dependencies.json
 test: dependencies
 	@$</jest/bin/jest test
 
+server: test/node_modules
+	@node test/server.js
+
+test/node_modules: test/package.json
+	@cd test && npm install
+	@touch $@
+
 .PHONY: test
