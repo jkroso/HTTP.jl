@@ -4,6 +4,7 @@
     "parse-json": "http://github.com/jkroso/parse-json/tarball/32b0152"
   },
   "production": {
-    "URI": "http://github.com/coiljl/URI/tarball/0.1.2"
+    "URI": "http://github.com/coiljl/URI/tarball/0.1.2",
+    "prospects": "http://github.com/jkroso/prospects/tarball/1eac352"
   }
 }

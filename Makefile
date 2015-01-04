@@ -3,7 +3,7 @@ dependencies: dependencies.json
 	@packin install --folder $@ --meta $<
 
 test: dependencies
-	@$</jest/bin/jest test
+	@$</jest/bin/jest test/index.jl
 
 server: test/node_modules
 	@node test/server.js

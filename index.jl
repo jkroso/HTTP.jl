@@ -1,5 +1,7 @@
+@require "prospects"
 @require "URI" URI
 import GnuTLS
+import GZip
 
 type Response
   status::Int
@@ -45,6 +47,24 @@ function request(verb, uri::URI, meta::Dict, data)
   Response(io)
 end
 
+function handle_request(verb, uri, meta, data; args...)
+  r = request(verb, uri, meta, data ;args...)
+  r.status >= 300 && return redirect(r, uri, meta; args...)
+  return r
+end
+
+function redirect(r::Response, uri::URI, meta; max_redirects=5)
+  redirects = String[]
+  while r.status >= 300
+    r.status >= 400 && throw(r)
+    push!(redirects, uri.path)
+    length(redirects) >= max_redirects && error("too many redirects")
+    uri.path = r.meta["Location"]
+    r = request("GET", uri, meta, "")
+  end
+  r
+end
+
 function resource(uri::URI)
   str = uri.path
   if !isempty(uri.query)
@@ -59,7 +79,7 @@ function resource(uri::URI)
 end
 
 ##
-# Parse incomming HTTP data into a `Response`
+# Parse incoming HTTP data into a `Response`
 #
 function Response(io::IO)
   status = int(readline(io)[9:12])
@@ -70,12 +90,29 @@ function Response(io::IO)
     key,value = split(line, ": ")
     meta[key] = value
   end
-  mime = get(meta, "Content-Type", "application/octet-stream")
-  mime = MIME(split(mime, "; ")[1])
+
+  # TcpSockets don't normally ever reach EOF
   if haskey(meta, "Content-Length")
     io = truncate(io, int(meta["Content-Length"]))
   end
+
+  # Transparently expand gzipped data
+  if ismatch(r"gzip"i, get(meta, "Content-Encoding", "none"))
+    tmp1 = tempname()
+    tmp2 = tempname()
+    open(f1 -> write(f1, io), tmp1, "w")
+    open(tmp2, "w") do f2
+      GZip.open(gz -> write(f2, gz), tmp1, "r")
+    end
+    meta["Content-Length"] = string(filesize(tmp2))
+    io = open(tmp2, "r")
+  end
+
+  # Run the data through Base.parse(::MIME,::IO)
+  mime = get(meta, "Content-Type", "application/octet-stream")
+  mime = MIME(split(mime, "; ")[1])
   body = applicable(parse, mime, io) ? parse(mime, io) : io
+
   Response(status, meta, body)
 end
 
@@ -101,7 +138,7 @@ function parseURI(uri::String)
 end
 
 ##
-# A suprising number of web servers expect to receive esoteric
+# A surprising number of web servers expect to receive esoteric
 # crap in their HTTP requests so lets send it to everyone so
 # nobody ever needs to think about it
 #
@@ -119,32 +156,8 @@ end
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
     function $f(uri::URI, data::String="", meta::Dict=Dict())
-      request($(string(f)), uri, with_bs(meta, uri, data), data)
+      handle_request($(string(f)), uri, with_bs(meta, uri, data), data)
     end
     $f(uri::String, args...) = $f(parseURI(uri), args...)
   end
 end
-
-##
-# AsyncStream's in Julia don't do a very good job of being API
-# compatible with other types of IO. TruncatedStream is an attempt
-# to rectify this
-#
-type TruncatedStream <: IO
-  stream::Base.AsyncStream
-  nb::Int
-  buff::String
-  cursor::Int
-end
-
-Base.truncate(io::Base.AsyncStream, n::Integer) = TruncatedStream(io, n, "", 0)
-Base.eof(io::TruncatedStream) = io.nb == 0
-Base.read(io::TruncatedStream, ::Type{Uint8}) = begin
-  io.nb -= 1
-  if io.cursor >= length(io.buff)
-    io.buff = readavailable(io.stream)
-    io.cursor = 0
-  end
-  uint8(io.buff[io.cursor += 1])
-end
-# TODO: implement a decent `skip(::TruncatedStream, ::Int)`
