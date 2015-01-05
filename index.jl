@@ -38,31 +38,38 @@ end
 #
 function request(verb, uri::URI, meta::Dict, data)
   io = connect(uri)
-  write(io, "$verb $(resource(uri)) HTTP/1.1\n")
-  for (key, value) in meta
-    write(io, "$key: $value\n")
-  end
-  write(io, "\n")
+  write_headers(io, verb, resource(uri), meta)
   write(io, data)
   Response(io)
 end
 
-function handle_request(verb, uri, meta, data; args...)
-  r = request(verb, uri, meta, data ;args...)
-  r.status >= 300 && return redirect(r, uri, meta; args...)
-  return r
+# NB: most servers don't require the '\r' before each '\n' but some do
+function write_headers(io::IO, verb::String, resource::String, meta::Dict)
+  write(io, "$verb $resource HTTP/1.1\r\n")
+  for (key, value) in meta
+    write(io, "$key: $value\r\n")
+  end
+  write(io, "\r\n")
 end
 
-function redirect(r::Response, uri::URI, meta; max_redirects=5)
+##
+# An opinionated wrapper which handles redirects and throws
+# on 4xx and 5xx responses
+#
+function handle_request(verb, uri, meta, data; max_redirects=5)
+  meta = with_bs(meta, uri, data)
+  r = request(verb, uri, meta, data)
   redirects = String[]
   while r.status >= 300
     r.status >= 400 && throw(r)
+    isloop = uri.path in redirects
     push!(redirects, uri.path)
+    isloop && error("redirect loop detected $redirects")
     length(redirects) >= max_redirects && error("too many redirects")
     uri.path = r.meta["Location"]
     r = request("GET", uri, meta, "")
   end
-  r
+  return r
 end
 
 function resource(uri::URI)
@@ -82,7 +89,8 @@ end
 # Parse incoming HTTP data into a `Response`
 #
 function Response(io::IO)
-  status = int(readline(io)[9:12])
+  line = readline(io)
+  status = int(line[9:12])
   meta = Dict{String,String}()
   for line in eachline(io)
     line = strip(line)
@@ -98,14 +106,9 @@ function Response(io::IO)
 
   # Transparently expand gzipped data
   if ismatch(r"gzip"i, get(meta, "Content-Encoding", "none"))
-    tmp1 = tempname()
-    tmp2 = tempname()
-    open(f1 -> write(f1, io), tmp1, "w")
-    open(tmp2, "w") do f2
-      GZip.open(gz -> write(f2, gz), tmp1, "r")
-    end
-    meta["Content-Length"] = string(filesize(tmp2))
-    io = open(tmp2, "r")
+    size,io = gunzip(io)
+    meta["Content-Length"] = string(size)
+    delete!(meta, "Content-Encoding")
   end
 
   # Run the data through Base.parse(::MIME,::IO)
@@ -114,6 +117,35 @@ function Response(io::IO)
   body = applicable(parse, mime, io) ? parse(mime, io) : io
 
   Response(status, meta, body)
+end
+
+##
+# Unzip a stream
+# TODO: extract into another module
+#
+function gunzip(io::IO)
+  f1 = open(tempname(), "w+")
+  f2 = open(tempname(), "w+")
+  write(f1, io)
+  seekstart(f1)
+  gz = GZip.gzdopen(f1)
+  write(f2, readbytes(gz))
+  close(gz)
+  close(f1)
+  seekstart(f2)
+  filesize(f2), f2
+end
+
+function Base.write(a::IO, b::GnuTLS.Session)
+  total = 0
+  while true
+    try
+      total += write(a, read(b, Uint8))
+    catch e
+      isa(e, EOFError) && return total
+      rethrow(e)
+    end
+  end
 end
 
 ##
@@ -143,8 +175,10 @@ end
 # nobody ever needs to think about it
 #
 function with_bs(meta::Dict, uri::URI, data::String)
-  get!(meta, "User-Agent", "Julia")
+  get!(meta, "User-Agent", "Julia/$VERSION")
   get!(meta, "Host", "$(uri.host):$(uri.port)")
+  get!(meta, "Accept-Encoding", "gzip")
+  get!(meta, "Accept", "*/*")
   isempty(data) || get!(meta, "Content-Length", string(sizeof(data)))
   meta
 end
@@ -156,7 +190,7 @@ end
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
     function $f(uri::URI, data::String="", meta::Dict=Dict())
-      handle_request($(string(f)), uri, with_bs(meta, uri, data), data)
+      handle_request($(string(f)), uri, meta, data)
     end
     $f(uri::String, args...) = $f(parseURI(uri), args...)
   end
