@@ -2,7 +2,7 @@
 @require "github.com/BioJulia/Libz.jl@27332bc" ZlibInflateInputStream
 @require "github.com/JuliaWeb/MbedTLS.jl@0136c58" => MbedTLS
 @require "github.com/jkroso/prospects@48c234b" TruncatedIO
-@require "github.com/coiljl/status@4ce12d1" messages
+@require "github.com/coiljl/status@b6b3163" messages
 @require "github.com/coiljl/URI@aa106e0" URI
 
 # taken from JuliaWeb/Requests.jl
