@@ -165,9 +165,9 @@ end
 #
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
-    function $f(uri::URI, data::AbstractString="", meta::Dict=Dict())
+    function $f(uri::URI; meta::Dict=Dict(), data::AbstractString="")
       handle_request($(string(f)), uri, meta, data)
     end
-    $f(uri::AbstractString, args...) = $f(parseURI(uri), args...)
+    $f(uri::AbstractString; args...) = $f(parseURI(uri); args...)
   end
 end
