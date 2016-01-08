@@ -1,5 +1,5 @@
+@require "github.com/coiljl/URI@db5b990" URI encode_query encode resolve
 @require "github.com/BioJulia/Libz.jl@27332bc" ZlibInflateInputStream
-@require "github.com/coiljl/URI@a7941e4" URI encode_query encode
 @require "github.com/JuliaWeb/MbedTLS.jl@0136c58" => MbedTLS
 @require "github.com/jkroso/prospects@48c234b" TruncatedIO
 @require "github.com/coiljl/status@b6b3163" messages
@@ -157,7 +157,7 @@ function handle_request(verb, uri, meta, data; max_redirects=5)
     push!(redirects, uri)
     isloop && error("redirect loop detected $redirects")
     length(redirects) > max_redirects && error("too many redirects")
-    uri = URI(uri, path=r.meta["Location"])
+    uri = resolve(uri, URI(r.meta["Location"]))
     r = request("GET", uri, meta, "")
   end
   return r
