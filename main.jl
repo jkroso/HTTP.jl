@@ -45,6 +45,7 @@ type Response <: IO
   meta::Dict{AbstractString,AbstractString}
   socket::IO
   length::Real
+  uri::URI
 end
 
 Base.eof(io::Response) = io.length == 0 || eof(io.socket)
@@ -54,9 +55,10 @@ Base.read(io::Response, ::Type{UInt8}) = begin
 end
 
 function Base.show(io::IO, r::Response)
-  print(io, "Response(", string(r.status), ' ', messages[r.status], ", ",
+  print(io, "Response(", r.uri, ' ',
+                         r.status, ' ', messages[r.status], ", ",
                          length(r.meta), " headers, ",
-                         r.length," bytes in body)")
+                         r.length, " bytes in body)")
 end
 
 ##
@@ -66,7 +68,7 @@ function request(verb, uri::URI, meta::Dict, data)
   io = connect(uri)
   write_headers(io, verb, uri, meta)
   write(io, data)
-  Response(io)
+  Response(io, uri)
 end
 
 # NB: most servers don't require the '\r' before each '\n' but some do
@@ -89,7 +91,7 @@ end
 ##
 # Parse incoming HTTP data into a `Response`
 #
-function Response(io::IO)
+function Response(io::IO, uri::URI)
   line = readline(io)
   status = parse(Int, line[9:12])
   meta = Dict{AbstractString,AbstractString}()
@@ -113,7 +115,7 @@ function Response(io::IO)
     length = Inf # no way to know how long it will be now
   end
 
-  Response(status, meta, io, length)
+  Response(status, meta, io, length, uri)
 end
 
 const uri_defaults = Dict(:protocol => :http,
