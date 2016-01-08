@@ -73,7 +73,7 @@ end
 function write_headers(io::IO, verb::AbstractString, uri::URI, meta::Dict)
   write(io, verb, ' ', path(uri), " HTTP/1.1\r\n")
   for (key, value) in meta
-    write(io, key, ": ", value, "\r\n")
+    write(io, string(key), ": ", string(value), "\r\n")
   end
   write(io, "\r\n")
 end
