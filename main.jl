@@ -1,9 +1,8 @@
-@require "github.com/coiljl/querystring@c627b5d" serialize => encode_query
 @require "github.com/BioJulia/Libz.jl@27332bc" ZlibInflateInputStream
+@require "github.com/coiljl/URI@a7941e4" URI encode_query encode
 @require "github.com/JuliaWeb/MbedTLS.jl@0136c58" => MbedTLS
 @require "github.com/jkroso/prospects@48c234b" TruncatedIO
 @require "github.com/coiljl/status@b6b3163" messages
-@require "github.com/coiljl/URI@aa106e0" URI
 
 # taken from JuliaWeb/Requests.jl
 function get_default_tls_config()
@@ -55,10 +54,10 @@ Base.read(io::Response, ::Type{UInt8}) = begin
 end
 
 function Base.show(io::IO, r::Response)
-  print(io, "Response(", r.uri, ' ',
-                         r.status, ' ', messages[r.status], ", ",
-                         length(r.meta), " headers, ",
-                         r.length, " bytes in body)")
+  print(io, "Response(\"", r.uri, "\" ",
+                      r.status, ' ', messages[r.status], ", ",
+                      length(r.meta), " headers, ",
+                      r.length, " bytes in body)")
 end
 
 ##
@@ -81,10 +80,10 @@ function write_headers(io::IO, verb::AbstractString, uri::URI, meta::Dict)
 end
 
 function path(uri::URI)
-  str = uri.path
+  str = encode(uri.path)
   query = encode_query(uri.query)
   if !isempty(query) str *= "?" * query end
-  if !isempty(uri.fragment) str *= "#" * uri.fragment end
+  if !isempty(uri.fragment) str *= "#" * encode(uri.fragment) end
   return str
 end
 
