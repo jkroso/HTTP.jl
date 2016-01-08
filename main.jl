@@ -125,18 +125,21 @@ parseURI(uri::AbstractString) = URI(uri, uri_defaults)
 port(uri::URI{:http}) = uri.port == 0 ? 80 : uri.port
 port(uri::URI{:https}) = uri.port == 0 ? 443 : uri.port
 
+const default_headers = Dict(
+  "User-Agent" => "Julia/$VERSION",
+  "Accept-Encoding" => "gzip",
+  "Accept" => "*/*")
+
 ##
 # A surprising number of web servers expect to receive esoteric
 # crap in their HTTP requests so lets send it to everyone so
 # nobody ever needs to think about it
 #
 function with_bs(meta::Dict, uri::URI, data::AbstractString)
-  get!(meta, "User-Agent", "Julia/$VERSION")
+  meta = merge(default_headers, meta)
   get!(meta, "Host", "$(uri.host):$(port(uri))")
-  get!(meta, "Accept-Encoding", "gzip")
-  get!(meta, "Accept", "*/*")
-  isempty(data) || get!(meta, "Content-Length", string(sizeof(data)))
-  meta
+  get!(meta, "Content-Length", string(sizeof(data)))
+  return meta
 end
 
 ##
