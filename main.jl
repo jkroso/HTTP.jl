@@ -1,4 +1,5 @@
-@require "github.com/coiljl/URI@db5b990" URI encode_query encode resolve
+@require "github.com/coiljl/URI@db5b990" URI encode_query encode resolve protocol
+@require "github.com/BioJulia/BufferedStreams.jl" BufferedInputStream
 @require "github.com/BioJulia/Libz.jl@27332bc" ZlibInflateInputStream
 @require "github.com/JuliaWeb/MbedTLS.jl@0136c58" => MbedTLS
 @require "github.com/jkroso/prospects@48c234b" TruncatedIO
@@ -27,13 +28,12 @@ const tls_conf = get_default_tls_config()
 ##
 # establish a TCPSocket with `uri`
 #
-Base.connect{schema}(uri::URI{schema}) = error("$schema not supported")
+Base.connect{protocol}(uri::URI{protocol}) = error("$protocol not supported")
 Base.connect(uri::URI{:http}) = Base.connect(uri.host, port(uri))
 Base.connect(uri::URI{:https}) = begin
-  sock = Base.connect(uri.host, port(uri))
   stream = MbedTLS.SSLContext()
   MbedTLS.setup!(stream, tls_conf)
-  MbedTLS.set_bio!(stream, sock)
+  MbedTLS.set_bio!(stream, Base.connect(uri.host, port(uri)))
   MbedTLS.hostname!(stream, uri.host)
   MbedTLS.handshake(stream)
   return stream
@@ -70,13 +70,15 @@ function request(verb, uri::URI, meta::Dict, data)
   Response(io, uri)
 end
 
+const CLRF = b"\r\n"
+
 # NB: most servers don't require the '\r' before each '\n' but some do
 function write_headers(io::IO, verb::AbstractString, uri::URI, meta::Dict)
-  write(io, verb, ' ', path(uri), " HTTP/1.1\r\n")
+  write(io, verb.data, b" ", path(uri), b" HTTP/1.1\r\n")
   for (key, value) in meta
-    write(io, string(key), ": ", string(value), "\r\n")
+    write(io, string(key), b": ", string(value), CLRF)
   end
-  write(io, "\r\n")
+  write(io, CLRF)
 end
 
 function path(uri::URI)
