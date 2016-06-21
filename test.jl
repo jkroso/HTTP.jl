@@ -1,4 +1,4 @@
-@require "github.com/jkroso/parse-json@3d7b44a" parse => parseJSON
+@require "github.com/jkroso/parse-json@4d9f46b" parse => parseJSON
 @require "./main" GET
 
 test("errors based on response status code") do
