@@ -1,9 +1,9 @@
 @require "github.com/BioJulia/BufferedStreams.jl" BufferedInputStream
-@require "github.com/BioJulia/Libz.jl@73238dc" ZlibInflateInputStream
-@require "github.com/coiljl/URI@9c0bf78" URI encode_query encode
-@require "github.com/JuliaWeb/MbedTLS.jl@634d9a9" => MbedTLS
-@require "github.com/jkroso/prospects@5c404c6" TruncatedIO
-@require "github.com/coiljl/status@b6b3163" messages
+@require "github.com/BioJulia/Libz.jl" ZlibInflateInputStream
+@require "github.com/coiljl/URI" URI encode_query encode
+@require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
+@require "github.com/jkroso/Prospects.jl" TruncatedIO
+@require "github.com/coiljl/status" messages
 
 # taken from JuliaWeb/Requests.jl
 function get_default_tls_config()
@@ -39,9 +39,9 @@ Base.connect(uri::URI{:https}) = begin
   return stream
 end
 
-type Response <: IO
+mutable struct Response <: IO
   status::UInt16
-  meta::Dict{AbstractString,AbstractString}
+  meta::Dict{String,String}
   socket::IO
   length::Real
   uri::URI
@@ -74,7 +74,7 @@ const CLRF = b"\r\n"
 
 # NB: most servers don't require the '\r' before each '\n' but some do
 function write_headers(io::IO, verb::AbstractString, uri::URI, meta::Dict)
-  write(io, verb.data, b" ", path(uri), b" HTTP/1.1\r\n")
+  write(io, verb, b" ", path(uri), b" HTTP/1.1\r\n")
   for (key, value) in meta
     write(io, string(key), b": ", string(value), CLRF)
   end
