@@ -12,5 +12,5 @@ testset("redirects") do
 end
 
 testset("Content-Encoding") do
-  @test parse(MIME("application/json"), GET(":8000/gzip")) != nothing
+  @test parse(GET(":8000/gzip")) isa Dict
 end

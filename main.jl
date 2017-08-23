@@ -1,8 +1,7 @@
-@require "github.com/BioJulia/BufferedStreams.jl" BufferedInputStream
 @require "github.com/BioJulia/Libz.jl" ZlibInflateInputStream
 @require "github.com/coiljl/URI" URI encode_query encode
+@require "github.com/jkroso/AsyncBuffer.jl" Buffer Take asyncpipe
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
-@require "github.com/jkroso/Prospects.jl" TruncatedIO
 @require "github.com/coiljl/status" messages
 
 # taken from JuliaWeb/Requests.jl
@@ -42,22 +41,23 @@ end
 mutable struct Response <: IO
   status::UInt16
   meta::Dict{String,String}
-  socket::IO
-  length::Real
+  data::IO
   uri::URI
 end
 
-Base.eof(io::Response) = io.length == 0 || eof(io.socket)
-Base.read(io::Response, ::Type{UInt8}) = begin
-  io.length -= 1
-  read(io.socket, UInt8)
-end
+Base.eof(io::Response) = eof(io.data)
+Base.read(io::Response) = read(io.data)
+Base.read(io::Response, x) = read(io.data, x)
+Base.nb_available(io::Response) = nb_available(io.data)
+Base.readavailable(io::Response) = readavailable(io.data)
 
 function Base.show(io::IO, r::Response)
-  print(io, "Response(\"", r.uri, "\" ",
-                      r.status, ' ', messages[r.status], ", ",
-                      length(r.meta), " headers, ",
-                      r.length, " bytes in body)")
+  println(io, "HTTP/1.1 ", r.status, ' ', messages[r.status])
+  for (header, value) in r.meta
+    println(io, header, ": ", value)
+  end
+  println(io)
+  println(io, nb_available(r), " bytes waiting")
 end
 
 ##
@@ -67,7 +67,7 @@ function request(verb, uri::URI, meta::Dict, data)
   io = connect(uri)
   write_headers(io, verb, uri, meta)
   write(io, data)
-  Response(io, uri)
+  handle_response(io, uri)
 end
 
 const CLRF = b"\r\n"
@@ -92,31 +92,77 @@ end
 ##
 # Parse incoming HTTP data into a `Response`
 #
-function Response(io::IO, uri::URI)
-  line = readline(io)
+function handle_response(io::IO, uri::URI)
+  line = readline(io, chomp=false)
   status = parse(Int, line[9:12])
   meta = Dict{AbstractString,AbstractString}()
 
   for line in eachline(io)
-    line = strip(line)
     line == "" && break
     key,value = split(line, ": ")
     meta[key] = value
   end
 
-  length = (haskey(meta, "Content-Length")
-    ? parse(Int, meta["Content-Length"])
-    : Inf)
+  output = io
 
-  # Expand gzipped data
-  if ismatch(r"gzip|deflate"i, get(meta, "Content-Encoding", ""))
-    io = ZlibInflateInputStream(TruncatedIO(io, length))
-    delete!(meta, "Content-Encoding")
-    delete!(meta, "Content-Length")
-    length = Inf # no way to know how long it will be now
+  if haskey(meta, "Content-Length")
+    output = asyncpipe(output, Take(parse(Int, meta["Content-Length"])))
+  elseif get(meta, "Transfer-Encoding", "") == "chunked"
+    output = unchunk(output)
   end
 
-  Response(status, meta, io, length, uri)
+  if ismatch(r"gzip|deflate"i, get(meta, "Content-Encoding", ""))
+    delete!(meta, "Content-Encoding")
+    delete!(meta, "Content-Length")
+    output = ZlibInflateInputStream(output)
+  end
+
+  Response(status, meta, output, uri)
+end
+
+##
+# Unfortunatly MbedTLS doesn't provide a very nice stream so
+# we need to try and adapt it
+#
+function handle_response(io::IO, uri::URI{:https})
+  buffer = Buffer()
+  main_task = current_task()
+  @schedule try
+    while !eof(io) && isopen(buffer)
+      write(buffer, read(io, 1))
+      write(buffer, read(io, nb_available(io)))
+    end
+    close(buffer)
+    close(io)
+  catch e
+    Base.throwto(main_task, e)
+  end
+  invoke(handle_response, Tuple{IO, URI}, buffer, uri)
+end
+
+"""
+Handle the [HTTP chunk format](https://tools.ietf.org/html/rfc2616#section-3.6)
+"""
+function unchunk(io::IO)
+  main_task = current_task()
+  out = Buffer()
+  @schedule try
+    while !eof(io)
+      line = readuntil(io, "\r\n")
+      len = parse(Int, line, 16)
+      if len == 0
+        trailer = readuntil(io, "\r\n")
+        close(out)
+        break
+      else
+        write(out, read(io, len))
+        @assert read(io, 2) == CLRF
+      end
+    end
+  catch e
+    Base.throwto(main_task, e)
+  end
+  out
 end
 
 const uri_defaults = Dict(:protocol => :http,
@@ -155,9 +201,8 @@ function handle_request(verb, uri, meta, data; max_redirects=5)
   redirects = URI[]
   while r.status >= 300
     r.status >= 400 && throw(r)
-    isloop = uri in redirects
+    @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
     push!(redirects, uri)
-    isloop && error("redirect loop detected $redirects")
     length(redirects) > max_redirects && error("too many redirects")
     uri = URI(r.meta["Location"], uri)
     r = request("GET", uri, meta, "")
@@ -176,4 +221,13 @@ for f in [:GET, :POST, :PUT, :DELETE]
     end
     $f(uri::AbstractString; args...) = $f(parseURI(uri); args...)
   end
+end
+
+"""
+Use the Response's mime type to parse a richer data type from its body
+"""
+function Base.parse(r::Response)
+  mime = split(get(r.meta, "Content-Type", ""), ';')[1] |> MIME
+  @assert applicable(parse, mime, r.data)
+  parse(mime, r.data)
 end
