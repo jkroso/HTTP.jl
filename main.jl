@@ -47,7 +47,8 @@ end
 
 Base.eof(io::Response) = eof(io.data)
 Base.read(io::Response) = read(io.data)
-Base.read(io::Response, x) = read(io.data, x)
+Base.read(io::Response, T::Type{UInt8}) = read(io.data, T)
+Base.read(io::Response, n::Number) = read(io.data, n)
 Base.nb_available(io::Response) = nb_available(io.data)
 Base.readavailable(io::Response) = readavailable(io.data)
 
