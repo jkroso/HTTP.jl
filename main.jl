@@ -99,7 +99,7 @@ function handle_response(io::IO, uri::URI)
   meta = Dict{AbstractString,AbstractString}()
 
   for line in eachline(io)
-    line == "" && break
+    isempty(line) && break
     key,value = split(line, ": ")
     meta[key] = value
   end
