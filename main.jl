@@ -3,6 +3,7 @@
 @require "github.com/jkroso/AsyncBuffer.jl" Buffer Take asyncpipe
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
 @require "github.com/coiljl/status" messages
+import Sockets.connect
 
 # taken from JuliaWeb/Requests.jl
 function get_default_tls_config()
@@ -27,12 +28,12 @@ const tls_conf = get_default_tls_config()
 ##
 # establish a TCPSocket with `uri`
 #
-Base.connect{protocol}(uri::URI{protocol}) = error("$protocol not supported")
-Base.connect(uri::URI{:http}) = Base.connect(uri.host, port(uri))
-Base.connect(uri::URI{:https}) = begin
+connect(uri::URI{protocol}) where protocol = error("$protocol not supported")
+connect(uri::URI{:http}) = connect(uri.host, port(uri))
+connect(uri::URI{:https}) = begin
   stream = MbedTLS.SSLContext()
   MbedTLS.setup!(stream, tls_conf)
-  MbedTLS.set_bio!(stream, Base.connect(uri.host, port(uri)))
+  MbedTLS.set_bio!(stream, connect(uri.host, port(uri)))
   MbedTLS.hostname!(stream, uri.host)
   MbedTLS.handshake(stream)
   return stream
@@ -94,7 +95,7 @@ end
 # Parse incoming HTTP data into a `Response`
 #
 function handle_response(io::IO, uri::URI)
-  line = readline(io, chomp=false)
+  line = readline(io, keep=true)
   status = parse(Int, line[9:12])
   meta = Dict{AbstractString,AbstractString}()
 
@@ -112,7 +113,7 @@ function handle_response(io::IO, uri::URI)
     output = unchunk(output)
   end
 
-  if ismatch(r"gzip|deflate"i, get(meta, "Content-Encoding", ""))
+  if occursin(r"gzip|deflate"i, get(meta, "Content-Encoding", ""))
     delete!(meta, "Content-Encoding")
     delete!(meta, "Content-Length")
     output = ZlibInflateInputStream(output)
@@ -128,7 +129,7 @@ end
 function handle_response(io::IO, uri::URI{:https})
   buffer = Buffer()
   main_task = current_task()
-  @schedule try
+  @async try
     while !eof(io) && isopen(buffer)
       write(buffer, read(io, 1))
       write(buffer, read(io, nb_available(io)))
@@ -147,7 +148,7 @@ Handle the [HTTP chunk format](https://tools.ietf.org/html/rfc2616#section-3.6)
 function unchunk(io::IO)
   main_task = current_task()
   out = Buffer()
-  @schedule try
+  @async try
     while !eof(io)
       line = readuntil(io, "\r\n")
       len = parse(Int, line, 16)
