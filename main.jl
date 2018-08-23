@@ -50,7 +50,7 @@ Base.eof(io::Response) = eof(io.data)
 Base.read(io::Response) = read(io.data)
 Base.read(io::Response, T::Type{UInt8}) = read(io.data, T)
 Base.read(io::Response, n::Number) = read(io.data, n)
-Base.nb_available(io::Response) = nb_available(io.data)
+Base.bytesavailable(io::Response) = bytesavailable(io.data)
 Base.readavailable(io::Response) = readavailable(io.data)
 
 function Base.show(io::IO, r::Response)
@@ -59,7 +59,7 @@ function Base.show(io::IO, r::Response)
     println(io, header, ": ", value)
   end
   println(io)
-  println(io, nb_available(r), " bytes waiting")
+  println(io, bytesavailable(r), " bytes waiting")
 end
 
 ##
@@ -132,7 +132,7 @@ function handle_response(io::IO, uri::URI{:https})
   @async try
     while !eof(io) && isopen(buffer)
       write(buffer, read(io, 1))
-      write(buffer, read(io, nb_available(io)))
+      write(buffer, read(io, bytesavailable(io)))
     end
     close(buffer)
     close(io)
@@ -151,7 +151,7 @@ function unchunk(io::IO)
   @async try
     while !eof(io)
       line = readuntil(io, "\r\n")
-      len = parse(Int, line, 16)
+      len = parse(Int, line, base=16)
       if len == 0
         trailer = readuntil(io, "\r\n")
         close(out)
