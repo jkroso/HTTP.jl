@@ -1,4 +1,4 @@
-@require "github.com/BioJulia/Libz.jl" ZlibInflateInputStream
+@require "github.com/bicycle1885/CodecZlib.jl" GzipDecompressorStream
 @require "github.com/coiljl/URI" URI encode_query encode
 @require "github.com/jkroso/AsyncBuffer.jl" Buffer Take asyncpipe
 @require "github.com/jkroso/Destructure.jl" @destruct
@@ -120,10 +120,16 @@ function handle_response(io::IO, uri::URI)
     output = unchunk(output)
   end
 
-  if occursin(r"gzip|deflate"i, get(meta, "Content-Encoding", ""))
+  encoding = lowercase(get(meta, "Content-Encoding", ""))
+  if encoding != ""
     delete!(meta, "Content-Encoding")
     delete!(meta, "Content-Length")
-    output = ZlibInflateInputStream(output)
+    if encoding == "gzip" || encoding == "deflate"
+      # the special deflate decoder didn't work but gzip works on both types anyway
+      output = GzipDecompressorStream(output)
+    else
+      error("unknown encoding: $encoding")
+    end
   end
 
   Response(status, meta, output, uri)
@@ -185,7 +191,7 @@ port(uri::URI{:https}) = uri.port == 0 ? 443 : uri.port
 
 const default_headers = Dict(
   "User-Agent" => "Julia/$VERSION",
-  "Accept-Encoding" => "gzip",
+  "Accept-Encoding" => "gzip, deflate",
   "Accept" => "*/*")
 
 ##

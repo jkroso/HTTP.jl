@@ -13,6 +13,7 @@ end
 
 testset("Content-Encoding") do
   @test parse(GET(":8000/gzip")) isa Dict
+  @test parse(GET(":8000/deflate")) isa Dict
 end
 
 testset("Session") do
