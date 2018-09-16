@@ -1,5 +1,5 @@
 @require "github.com/jkroso/parse-json.jl"
-@require "." GET
+@require "." GET Session
 
 testset("errors based on response status code") do
   @test nothing != @catch GET(":8000/status/400")
@@ -13,4 +13,10 @@ end
 
 testset("Content-Encoding") do
   @test parse(GET(":8000/gzip")) isa Dict
+end
+
+testset("Session") do
+  s = Session(":8000")
+  parse(GET(s, "/cookies/set?a=1")) == Dict("cookies"=>Dict("a"=>"1"))
+  parse(GET(s, "/cookies/set?b=2")) == Dict("cookies"=>Dict("a"=>"1","b"=>"2"))
 end

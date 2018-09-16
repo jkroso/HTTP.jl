@@ -1,9 +1,12 @@
 @require "github.com/BioJulia/Libz.jl" ZlibInflateInputStream
 @require "github.com/coiljl/URI" URI encode_query encode
 @require "github.com/jkroso/AsyncBuffer.jl" Buffer Take asyncpipe
+@require "github.com/jkroso/Destructure.jl" @destruct
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
+@require "github.com/jkroso/Prospects.jl" assoc
 @require "github.com/coiljl/status" messages
-import Sockets.connect
+import Sockets: connect, TCPSocket
+import Dates
 
 # taken from JuliaWeb/Requests.jl
 function get_default_tls_config()
@@ -41,7 +44,7 @@ end
 
 mutable struct Response <: IO
   status::UInt16
-  meta::Dict{String,String}
+  meta::Dict{String,Union{String,Vector{String}}}
   data::IO
   uri::URI
 end
@@ -65,8 +68,7 @@ end
 ##
 # Make an HTTP request to `uri` blocking until a response is received
 #
-function request(verb, uri::URI, meta::Dict, data)
-  io = connect(uri)
+function request(verb, uri::URI, meta::Dict, data, io::IO=connect(uri))
   write_headers(io, verb, uri, meta)
   write(io, data)
   handle_response(io, uri)
@@ -97,12 +99,17 @@ end
 function handle_response(io::IO, uri::URI)
   line = readline(io, keep=true)
   status = parse(Int, line[9:12])
-  meta = Dict{AbstractString,AbstractString}()
+  meta = Dict{String,Union{String,Vector{String}}}()
 
   for line in eachline(io)
     isempty(line) && break
     key,value = split(line, ": ")
-    meta[key] = value
+    # Set-Cookie can appear multiple times
+    if key == "Set-Cookie"
+      push!(get!(Vector{String}, meta, key), value)
+    else
+      meta[key] = convert(String, value)
+    end
   end
 
   output = io
@@ -212,6 +219,123 @@ function handle_request(verb, uri, meta, data; max_redirects=5)
   return r
 end
 
+"""
+Use the Response's mime type to parse a richer data type from its body
+"""
+function Base.parse(r::Response)
+  mime = split(get(r.meta, "Content-Type", ""), ';')[1] |> MIME
+  @assert applicable(parse, mime, r.data)
+  parse(mime, r.data)
+end
+
+struct Cookie
+  name::String
+  value::String
+  path::String
+  domain::String
+  expires::Union{Nothing,Dates.DateTime}
+  secure::Bool    # restrict to https requests
+  hostonly::Bool  # should this cookie be sent to subdomains
+end
+
+parse_cookie(str::AbstractString, uri::URI, now::Dates.DateTime) = begin
+  @destruct [kv, attrs...] = split(str, ';')
+  name, value = map(strip, split(kv, '='))
+  dict = Dict{String,String}()
+  for attr in attrs
+    kv = split(attr, '=')
+    dict[strip(kv[1])] = strip(get(kv, 2, ""))
+  end
+  Cookie(name,
+         value,
+         get(dict, "Path", "/"),
+         get(dict, "Domain", uri.host),
+         if haskey(dict, "Expires")
+           Dates.DateTime(dict["Expires"], Dates.dateformat"e, d u y H:M:S G\MT")
+         elseif haskey(dict, "Max-Age")
+           now + Dates.Second(parse(Int, dict["Max-Age"]))
+         else
+           nothing
+         end,
+         haskey(dict, "Secure"),
+         !haskey(dict, "Domain"))
+end
+
+mutable struct Session
+  uri::URI
+  cookies::Dict{String,Cookie}
+  connection::Union{TCPSocket,MbedTLS.SSLContext,Nothing}
+  lock::ReentrantLock
+end
+
+Session(uri::URI) = Session(uri, Dict{String,Cookie}(), nothing, ReentrantLock())
+Session(uri::AbstractString) = Session(parseURI(uri))
+
+"""
+Get an active TCPSocket associated with the sessions server
+"""
+connect(s::Session) = begin
+  if !isopen(s)
+    s.connection = connect(s.uri)
+  end
+  s.connection
+end
+Base.isopen(s::Session) = s.connection != nothing && isopen(s.connection)
+
+handle_request(s::Session, verb::AbstractString, path::AbstractString, meta, body; max_redirects=5) =
+  lock(s.lock) do
+    io = connect(s)
+    now = Dates.now()
+    filter!(kv -> !isexpired(now, kv[2]), s.cookies)
+    uri = assoc(s.uri, :path, joinpath(abspath("/", s.uri.path), path))
+    meta = with_bs(assoc(meta, "Connection", "keep-alive"), uri, body)
+    res = request(s, now, verb, uri, meta, body, io)
+    redirects = URI[]
+    while res.status >= 300
+      res.status >= 400 && throw(r)
+      @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
+      push!(redirects, uri)
+      length(redirects) > max_redirects && error("too many redirects")
+      uri = URI(res.meta["Location"], uri)
+      res = request(s, now, "GET", uri, meta, "")
+    end
+    res
+  end
+
+request(s::Session, now::Dates.DateTime, verb::String, uri::URI, meta, data, io=connect(s)) = begin
+  cookies = filter(collect(values(s.cookies))) do c
+    if c.hostonly
+      uri.host == c.domain
+    else
+      endswith(uri.host, c.domain)
+    end
+  end
+  if !isempty(cookies)
+    meta = assoc(meta, "Cookie", join(("$(c.name)=$(c.value)" for c in cookies), "; "))
+  end
+  res = request(verb, uri, meta, data, io)
+  add_cookies(s, res, now)
+  # needs to be buffered since the TCPSocket might get used for other requests
+  # before anyone has had the chance the fully read the data from this request
+  res.data = IOBuffer(read(res.data))
+  if get(res.meta, "Connection", "keep-alive") == "close"
+    close(io)
+  end
+  res
+end
+
+isexpired(now::Dates.DateTime, c::Cookie) = c.expires != nothing && c.expires <= now
+
+add_cookies(s::Session, res::Response, now::Dates.DateTime) =
+  for str in get(Vector{String}, res.meta, "Set-Cookie")
+    c = parse_cookie(str, res.uri, now)
+    if isexpired(now, c)
+      delete!(s.cookies, c.name)
+    else
+      s.cookies[c.name] = c
+    end
+  end
+
 ##
 # Create convenience methods for the common HTTP verbs so
 # you can simply write `GET("github.com")`
@@ -222,14 +346,6 @@ for f in [:GET, :POST, :PUT, :DELETE]
       handle_request($(string(f)), uri, meta, data)
     end
     $f(uri::AbstractString; args...) = $f(parseURI(uri); args...)
+    $f(s::Session, path::AbstractString; meta=Dict(), body="") = handle_request(s, $(string(f)), path, meta, body)
   end
-end
-
-"""
-Use the Response's mime type to parse a richer data type from its body
-"""
-function Base.parse(r::Response)
-  mime = split(get(r.meta, "Content-Type", ""), ';')[1] |> MIME
-  @assert applicable(parse, mime, r.data)
-  parse(mime, r.data)
 end
