@@ -4,7 +4,7 @@
 @require "github.com/jkroso/Destructure.jl" @destruct
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
 @require "github.com/jkroso/Prospects.jl" assoc
-@require "github.com/coiljl/status" messages
+@require "../status" messages
 import Sockets: connect, TCPSocket
 import Dates
 
