@@ -51,8 +51,8 @@ end
 
 Base.eof(io::Response) = eof(io.data)
 Base.read(io::Response) = read(io.data)
-Base.read(io::Response, T::Type{UInt8}) = read(io.data, T)
-Base.read(io::Response, n::Number) = read(io.data, n)
+Base.read(io::Response, T::Type) = read(io.data, T)
+Base.read(io::Response, n::Integer) = read(io.data, n)
 Base.bytesavailable(io::Response) = bytesavailable(io.data)
 Base.readavailable(io::Response) = readavailable(io.data)
 
@@ -97,7 +97,7 @@ end
 # Parse incoming HTTP data into a `Response`
 #
 function handle_response(io::IO, uri::URI)
-  line = readline(io, keep=true)
+  line = readline(io)
   status = parse(Int, line[9:12])
   meta = Dict{String,Union{String,Vector{String}}}()
 
