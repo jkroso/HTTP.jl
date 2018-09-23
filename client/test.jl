@@ -1,4 +1,7 @@
 #! jest
+# The server should first be started with:
+# `docker run -p 8000:80 kennethreitz/httpbin`
+
 @require "github.com/jkroso/parse-json.jl"
 @require "." GET Session
 
