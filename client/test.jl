@@ -1,3 +1,4 @@
+#! jest
 @require "github.com/jkroso/parse-json.jl"
 @require "." GET Session
 

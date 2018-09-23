@@ -1,8 +1,8 @@
 @require "github.com/bicycle1885/CodecZlib.jl" GzipDecompressorStream
 @require "github.com/coiljl/URI" URI encode_query encode
-@require "github.com/jkroso/AsyncBuffer.jl" Buffer Take asyncpipe
 @require "github.com/jkroso/Destructure.jl" @destruct
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
+@require "github.com/jkroso/AsyncBuffer.jl" Buffer
 @require "github.com/jkroso/Prospects.jl" assoc
 @require "../status" messages
 import Sockets: connect, TCPSocket
@@ -69,21 +69,15 @@ end
 # Make an HTTP request to `uri` blocking until a response is received
 #
 function request(verb, uri::URI, meta::Dict, data, io::IO=connect(uri))
-  write_headers(io, verb, uri, meta)
-  write(io, data)
+  write(io, verb, ' ', path(uri), b" HTTP/1.1")
+  for (key, value) in meta
+    write(io, CLRF, string(key), b": ", string(value))
+  end
+  write(io, CLRF, CLRF, data)
   handle_response(io, uri)
 end
 
 const CLRF = b"\r\n"
-
-# NB: most servers don't require the '\r' before each '\n' but some do
-function write_headers(io::IO, verb::AbstractString, uri::URI, meta::Dict)
-  write(io, verb, b" ", path(uri), b" HTTP/1.1\r\n")
-  for (key, value) in meta
-    write(io, string(key), b": ", string(value), CLRF)
-  end
-  write(io, CLRF)
-end
 
 function path(uri::URI)
   str = encode(uri.path)
@@ -97,8 +91,8 @@ end
 # Parse incoming HTTP data into a `Response`
 #
 function handle_response(io::IO, uri::URI)
-  line = readline(io)
-  status = parse(Int, line[9:12])
+  line = readline(io, keep=true)
+  status = parse(Int, line[10:12])
   meta = Dict{String,Union{String,Vector{String}}}()
 
   for line in eachline(io)
@@ -115,7 +109,7 @@ function handle_response(io::IO, uri::URI)
   output = io
 
   if haskey(meta, "Content-Length")
-    output = asyncpipe(output, Take(parse(Int, meta["Content-Length"])))
+    output = IOBuffer(read(output, parse(Int, meta["Content-Length"])))
   elseif get(meta, "Transfer-Encoding", "") == "chunked"
     output = unchunk(output)
   end
@@ -192,6 +186,7 @@ port(uri::URI{:https}) = uri.port == 0 ? 443 : uri.port
 const default_headers = Dict(
   "User-Agent" => "Julia/$VERSION",
   "Accept-Encoding" => "gzip, deflate",
+  "Connection" => "keep-alive",
   "Accept" => "*/*")
 
 ##
@@ -212,16 +207,18 @@ end
 #
 function handle_request(verb, uri, meta, data; max_redirects=5)
   meta = with_bs(meta, uri, data)
-  r = request(verb, uri, meta, data)
+  io = connect(uri)
+  r = request(verb, uri, meta, data, io)
   redirects = URI[]
   while r.status >= 300
-    r.status >= 400 && throw(r)
+    r.status >= 400 && (close(io); throw(r))
     @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
     push!(redirects, uri)
     length(redirects) > max_redirects && error("too many redirects")
-    uri = URI(r.meta["Location"], uri)
-    r = request("GET", uri, meta, "")
+    uri = parse_redirect(r.meta["Location"], uri)
+    r = request("GET", uri, meta, "", io)
   end
+  close(io)
   return r
 end
 
@@ -270,7 +267,7 @@ end
 mutable struct Session
   uri::URI
   cookies::Dict{String,Cookie}
-  connection::Union{TCPSocket,MbedTLS.SSLContext,Nothing}
+  connection::Union{IO,Nothing}
   lock::ReentrantLock
 end
 
@@ -286,6 +283,7 @@ connect(s::Session) = begin
   end
   s.connection
 end
+
 Base.isopen(s::Session) = s.connection != nothing && isopen(s.connection)
 
 handle_request(s::Session, verb::AbstractString, path::AbstractString, meta, body; max_redirects=5) =
@@ -302,11 +300,17 @@ handle_request(s::Session, verb::AbstractString, path::AbstractString, meta, bod
       @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
       push!(redirects, uri)
       length(redirects) > max_redirects && error("too many redirects")
-      uri = URI(res.meta["Location"], uri)
+      uri = parse_redirect(res.meta["Location"], uri)
       res = request(s, now, "GET", uri, meta, "")
     end
     res
   end
+
+parse_redirect(location::AbstractString, defaults::URI) =
+  URI(location, Dict(:host=>defaults.host,
+                     :port=>defaults.port,
+                     :username=>defaults.username,
+                     :password=>defaults.password))
 
 request(s::Session, now::Dates.DateTime, verb::String, uri::URI, meta, data, io=connect(s)) = begin
   cookies = filter(collect(values(s.cookies))) do c
