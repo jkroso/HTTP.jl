@@ -1,8 +1,8 @@
 @require "github.com/bicycle1885/CodecZlib.jl" GzipDecompressorStream
+@require "github.com/jkroso/AsyncBuffer.jl" Buffer SubStream
 @require "github.com/coiljl/URI" URI encode_query encode
 @require "github.com/jkroso/Destructure.jl" @destruct
 @require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
-@require "github.com/jkroso/AsyncBuffer.jl" Buffer
 @require "github.com/jkroso/Prospects.jl" assoc
 @require "../status" messages
 import Sockets: connect, TCPSocket
@@ -109,7 +109,7 @@ function handle_response(io::IO, uri::URI)
   output = io
 
   if haskey(meta, "Content-Length")
-    output = IOBuffer(read(output, parse(Int, meta["Content-Length"])))
+    output = SubStream(output, parse(Int, meta["Content-Length"]))
   elseif get(meta, "Transfer-Encoding", "") == "chunked"
     output = unchunk(output)
   end
@@ -216,6 +216,7 @@ function handle_request(verb, uri, meta, data; max_redirects=5)
     push!(redirects, uri)
     length(redirects) > max_redirects && error("too many redirects")
     uri = parse_redirect(r.meta["Location"], uri)
+    read(r.data) # skip the data
     r = request("GET", uri, meta, "", io)
   end
   close(io)
