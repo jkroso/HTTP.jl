@@ -123,7 +123,7 @@ Response(m::Dict, data::Any) = Response(200, m, data)
 Response(s::Integer, data::Any) = Response(s, Headers(), data)
 Response(typ::AbstractString, data::Any) = Response(MIME(typ), data)
 Response(mime::MIME, data::Any) = begin
-  body = applicable(stringmime, mime, data) ? stringmime(mime, data) : data
+  body = applicable(repr, mime, data) ? repr(mime, data) : data
   Response(200, Dict("Content-Type"=>string(mime)), body)
 end
 
