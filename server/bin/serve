@@ -8,7 +8,7 @@ import Sockets: listen, listenany, localhost, IPAddr
 Serve <file> on <port>. If you don't define a port one will be selected
 randomly and printed to STDOUT
 """
-@CLI (file::String; port::Integer=0, addr::String="localhost")
+@CLI (file::String; port::Integer=get(ENV,"PORT",0), addr::String="localhost")
 
 host = addr == "localhost" ? localhost : parse(IPAddr, addr)
 
