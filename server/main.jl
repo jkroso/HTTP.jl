@@ -1,6 +1,6 @@
+import Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr
 @require "../status" messages
 @require "github.com/coiljl/URI" URI
-import Sockets: TCPServer, listen, accept, TCPSocket
 
 struct HTTPServer <: Base.IOServer
   tcp::TCPServer
@@ -24,7 +24,8 @@ println("server listening on http://localhost:3000")
 wait(server)
 ```
 """
-serve(fn::Any, port::Integer) = serve(fn, listen(port))
+serve(fn::Any, port::Integer, addr::IPAddr=localhost) = serve(fn, listen(addr, port))
+serve(fn::Any, port::Integer, addr::AbstractString) = serve(fn, port, parse(IPAddr, addr))
 serve(fn::Any, server::TCPServer) = HTTPServer(server, @async handle_requests(fn, server))
 
 handle_requests(fn::Any, server::TCPServer) = begin

@@ -2,21 +2,23 @@
 using Kip
 @require "github.com/jkroso/SimpleCLI.jl" @CLI
 @require ".." handle_requests Request Response
-import Sockets: listen, listenany
+import Sockets: listen, listenany, localhost, IPAddr
 
 """
 Serve <file> on <port>. If you don't define a port one will be selected
 randomly and printed to STDOUT
 """
-@CLI (file::String; port::Integer=0)
+@CLI (file::String; port::Integer=0, addr::String="localhost")
+
+host = addr == "localhost" ? localhost : parse(IPAddr, addr)
 
 const p, server = if port != 0
-  port, listen(port)
+  port, listen(host, port)
 else
-  listenany(3000)
+  listenany(host, 3000)
 end
 
-println(p)
+println("$host:$p")
 
 const mod = @eval module $(Symbol(file))
   using Kip
