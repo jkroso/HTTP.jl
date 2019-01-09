@@ -1,7 +1,7 @@
 #!/usr/bin/env julia
 using Kip
 @require "github.com/jkroso/SimpleCLI.jl" @CLI
-@require ".." handle_requests Request Response
+@require "github.com/jkroso/HTTP.jl/server" handle_requests Request Response
 import Sockets: listen, listenany, localhost, IPAddr
 
 """
