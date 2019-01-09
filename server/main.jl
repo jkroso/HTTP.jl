@@ -134,7 +134,7 @@ const CLRF = b"\r\n"
 """
 Render a Response as an outgoing HTTP message
 """
-Base.write(io::IO, r::Response) = begin
+Base.write(io::IO, r::Response{T}) where T = begin
   b = write(io, PROTOCOL, string(r.status), ' ', messages[r.status])
   for (key, value) in r.meta
     if key == "Set-Cookie"
@@ -146,7 +146,11 @@ Base.write(io::IO, r::Response) = begin
     end
   end
 
-  if suggested_encoding(r) == :chunked
+  if haskey(r.meta, "Content-Length")
+    return b + write(io, CLRF, CLRF, r.data)
+  end
+
+  if T <: IO
     b += write(io, CLRF, b"Transfer-Encoding: chunked", CLRF, CLRF)
     while !eof(r.data)
       nb = bytesavailable(r.data)
@@ -158,9 +162,6 @@ Base.write(io::IO, r::Response) = begin
   bytes = buffer(r)
   b + write(io, CLRF, b"Content-Length: ", string(sizeof(bytes)), CLRF, CLRF, bytes)
 end
-
-suggested_encoding(::Response) = :identity
-suggested_encoding(::Response{<:IO}) = :chunked
 
 buffer(r::Response{<:Union{AbstractString,Vector{UInt8}}}) = r.data
 buffer(r::Response) = sprint(write, r.data)
