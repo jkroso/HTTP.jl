@@ -48,13 +48,20 @@ handle_requests(fn::Any, server::TCPServer) =
   end
 
 request_received(io::TCPSocket) = begin
-  Base.wait_readnb(io, 1)
+  try
+    Base.wait_readnb(io, 1)
+  catch e
+    isECONNRESET(e) || rethrow(e)
+  end
   isopen(io)
 end
 
 # EPIPE just means we tried to write to a closed stream
 isEPIPE(e::Base.IOError) = e.code == -Libc.EPIPE
 isEPIPE(e::Any) = false
+# ECONNRESET just means the client closed the stream
+isECONNRESET(e::Any) = false
+isECONNRESET(e::Base.IOError) = e.code == -Libc.ECONNRESET
 
 """
 serve without the task wrapper so that stack traces can be preserved
