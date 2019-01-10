@@ -1,4 +1,4 @@
-import Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr
+import Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr, IPv4
 @require "../status" messages
 @require "github.com/coiljl/URI" URI
 
@@ -26,6 +26,7 @@ wait(server)
 """
 serve(fn::Any, port::Integer, addr::IPAddr=localhost) = serve(fn, listen(addr, port))
 serve(fn::Any, port::Integer, addr::AbstractString) = serve(fn, port, parse(IPAddr, addr))
+serve(fn::Any, port::Integer, addr::Integer) = serve(fn, port, IPv4(addr))
 serve(fn::Any, server::TCPServer) = HTTPServer(server, @async handle_requests(fn, server))
 
 handle_requests(fn::Any, server::TCPServer) =
