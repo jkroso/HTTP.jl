@@ -28,25 +28,24 @@ serve(fn::Any, port::Integer, addr::IPAddr=localhost) = serve(fn, listen(addr, p
 serve(fn::Any, port::Integer, addr::AbstractString) = serve(fn, port, parse(IPAddr, addr))
 serve(fn::Any, server::TCPServer) = HTTPServer(server, @async handle_requests(fn, server))
 
-handle_requests(fn::Any, server::TCPServer) = begin
+handle_requests(fn::Any, server::TCPServer) =
   while isopen(server)
-   sock = accept(server)
-   keepalive = true
-   while keepalive && request_received(sock)
-     try
-       request = Request(sock)
-       keepalive = get(request.meta, "Connection", "keep-alive") == "keep-alive"
-       write(sock, fn(request))
-     catch e
-       if !isEPIPE(e)
-         isopen(sock) && write(sock, Response(500))
-         rethrow(e)
-       end
-     end
-   end
-   close(sock)
- end
-end
+    sock = accept(server)
+    keepalive = true
+    while keepalive && request_received(sock)
+      try
+        request = Request(sock)
+        keepalive = get(request.meta, "Connection", "keep-alive") == "keep-alive"
+        write(sock, fn(request))
+      catch e
+        if !isEPIPE(e)
+          isopen(sock) && write(sock, Response(500))
+          rethrow(e)
+        end
+      end
+    end
+    close(sock)
+  end
 
 request_received(io::TCPSocket) = begin
   Base.wait_readnb(io, 1)
