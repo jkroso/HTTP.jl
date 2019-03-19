@@ -1,7 +1,6 @@
 #!/usr/bin/env julia --color=yes
 using Kip
 @require "github.com/jkroso/SimpleCLI.jl" @CLI
-@require "github.com/jkroso/HTTP.jl/server" handle_requests Request Response
 import Sockets: listen, listenany, localhost, IPAddr
 
 """
@@ -19,6 +18,9 @@ else
 end
 
 println("$host:$p")
+
+# require late so we connect to the port ASAP
+@require "github.com/jkroso/HTTP.jl/server" handle_requests Request Response
 
 const mod = @eval module $(Symbol(file))
   using Kip
