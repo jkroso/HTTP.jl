@@ -1,4 +1,4 @@
-#!/usr/bin/env julia
+#!/usr/bin/env julia --color=yes
 using Kip
 @require "github.com/jkroso/SimpleCLI.jl" @CLI
 @require "github.com/jkroso/HTTP.jl/server" handle_requests Request Response
