@@ -22,12 +22,13 @@ println("$host:$p")
 # require late so we connect to the port ASAP
 @require "github.com/jkroso/HTTP.jl/server" handle_requests Request Response
 
-const mod = @eval module $(Symbol(file))
-  using Kip
+const path = joinpath(pwd(), file)
+const mod = Kip.get_module(path)
+Core.eval(mod, quote
   const Response = $Response
   const Request = $Request
-end
+end)
 
-const fn = Core.eval(mod, :(include($(joinpath(pwd(), file)))))
+const fn = Base.include(mod, path)
 
 handle_requests(fn, server)
