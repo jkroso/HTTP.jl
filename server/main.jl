@@ -32,7 +32,6 @@ serve(fn::Any, server::TCPServer) = HTTPServer(server, @async handle_requests(fn
 handle_requests(fn::Any, server::TCPServer) =
   while isopen(server)
     sock = accept(server)
-    t = current_task()
     @async begin
       keepalive = true
       while keepalive && request_received(sock)
@@ -43,7 +42,8 @@ handle_requests(fn::Any, server::TCPServer) =
         catch e
           if !isEPIPE(e)
             isopen(sock) && write(sock, Response(500))
-            Base.throwto(t, e)
+            Base.showerror(stderr, e)
+            Base.show_backtrace(stderr, catch_backtrace())
             break
           end
         end
