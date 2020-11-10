@@ -1,10 +1,10 @@
-@require "github.com/bicycle1885/CodecZlib.jl" GzipDecompressorStream
-@require "github.com/jkroso/AsyncBuffer.jl" Buffer SubStream
-@require "github.com/coiljl/URI" URI encode_query encode
-@require "github.com/jkroso/Destructure.jl" @destruct
-@require "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
-@require "github.com/jkroso/Prospects.jl" assoc
-@require "../status" messages
+@use "github.com/bicycle1885/CodecZlib.jl" GzipDecompressorStream
+@use "github.com/jkroso/AsyncBuffer.jl" Buffer SubStream
+@use "github.com/coiljl/URI" URI encode_query encode
+@use "github.com/jkroso/Destructure.jl" @destruct
+@use "github.com/JuliaWeb/MbedTLS.jl" => MbedTLS
+@use "github.com/jkroso/Prospects.jl" assoc
+@use "../status" messages
 import Sockets: connect, TCPSocket
 import Dates
 
@@ -28,9 +28,7 @@ end
 
 const tls_conf = get_default_tls_config()
 
-##
 # establish a TCPSocket with `uri`
-#
 connect(uri::URI{protocol}) where protocol = error("$protocol not supported")
 connect(uri::URI{:http}) = connect(uri.host, port(uri))
 connect(uri::URI{:https}) = begin
@@ -65,9 +63,7 @@ function Base.show(io::IO, r::Response)
   println(io, bytesavailable(r), " bytes waiting")
 end
 
-##
 # Make an HTTP request to `uri` blocking until a response is received
-#
 function request(verb, uri::URI, meta::Dict, data, io::IO=connect(uri))
   write(io, verb, ' ', path(uri), b" HTTP/1.1")
   for (key, value) in meta
@@ -87,9 +83,7 @@ function path(uri::URI)
   return str
 end
 
-##
 # Parse incoming HTTP data into a `Response`
-#
 function handle_response(io::IO, uri::URI)
   line = readline(io, keep=true)
   status = parse(Int, line[10:12])
@@ -129,10 +123,7 @@ function handle_response(io::IO, uri::URI)
   Response(status, meta, output, uri)
 end
 
-##
-# Unfortunatly MbedTLS doesn't provide a very nice stream so
-# we need to try and adapt it
-#
+# Unfortunatly MbedTLS doesn't provide a very nice stream so we need to try and adapt it
 function handle_response(io::IO, uri::URI{:https})
   buffer = Buffer()
   main_task = current_task()
@@ -189,11 +180,8 @@ const default_headers = Dict(
   "Connection" => "keep-alive",
   "Accept" => "*/*")
 
-##
-# A surprising number of web servers expect to receive esoteric
-# crap in their HTTP requests so lets send it to everyone so
-# nobody ever needs to think about it
-#
+# A surprising number of web servers expect to receive esoteric crap in their HTTP
+#requests so lets send it to everyone so nobody ever needs to think about it
 function with_bs(meta::Dict, uri::URI, data::AbstractString)
   meta = merge(default_headers, meta)
   get!(meta, "Host", "$(uri.host):$(port(uri))")
@@ -201,10 +189,7 @@ function with_bs(meta::Dict, uri::URI, data::AbstractString)
   return meta
 end
 
-##
-# An opinionated wrapper which handles redirects and throws
-# on 4xx and 5xx responses
-#
+# An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses
 function handle_request(verb, uri, meta, data; max_redirects=5)
   meta = with_bs(meta, uri, data)
   io = connect(uri)
@@ -223,9 +208,7 @@ function handle_request(verb, uri, meta, data; max_redirects=5)
   return r
 end
 
-"""
-Use the Response's mime type to parse a richer data type from its body
-"""
+"Use the Response's mime type to parse a richer data type from its body"
 function Base.parse(r::Response)
   mime = split(get(r.meta, "Content-Type", ""), ';')[1] |> MIME
   @assert applicable(parse, mime, r.data)
@@ -275,9 +258,7 @@ end
 Session(uri::URI) = Session(uri, Dict{String,Cookie}(), nothing, ReentrantLock())
 Session(uri::AbstractString) = Session(parseURI(uri))
 
-"""
-Get an active TCPSocket associated with the sessions server
-"""
+"Get an active TCPSocket associated with the sessions server"
 connect(s::Session) = begin
   if !isopen(s)
     s.connection = connect(s.uri)
@@ -347,10 +328,7 @@ add_cookies(s::Session, res::Response, now::Dates.DateTime) =
     end
   end
 
-##
-# Create convenience methods for the common HTTP verbs so
-# you can simply write `GET("github.com")`
-#
+# Create convenience methods for the common HTTP verbs so you can simply write `GET("github.com")`
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
     function $f(uri::URI; meta::Dict=Dict(), data::AbstractString="")

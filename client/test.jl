@@ -1,9 +1,8 @@
-#! jest
 # The server should first be started with:
 # `docker run -p 8000:80 kennethreitz/httpbin`
-
-@require "github.com/jkroso/parse-json.jl"
-@require "." GET Session
+@use "github.com/jkroso/Rutherford.jl/test.jl" testset @test @catch
+@use "github.com/jkroso/parse-json.jl"
+@use "." GET Session
 
 testset("errors based on response status code") do
   @test nothing != @catch GET(":8000/status/400")
@@ -22,6 +21,6 @@ end
 
 testset("Session") do
   s = Session(":8000")
-  parse(GET(s, "/cookies/set?a=1")) == Dict("cookies"=>Dict("a"=>"1"))
-  parse(GET(s, "/cookies/set?b=2")) == Dict("cookies"=>Dict("a"=>"1","b"=>"2"))
+  @test parse(GET(s, "/cookies/set?a=1")) == Dict("cookies"=>Dict("a"=>"1"))
+  @test parse(GET(s, "/cookies/set?b=2")) == Dict("cookies"=>Dict("a"=>"1","b"=>"2"))
 end
