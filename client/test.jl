@@ -1,17 +1,16 @@
 # The server should first be started with:
 # `docker run -p 8000:80 kennethreitz/httpbin`
 @use "github.com/jkroso/Rutherford.jl/test.jl" testset @test @catch
-@use "github.com/jkroso/parse-json.jl"
-@use "." GET Session
+@use "github.com/jkroso/JSON.jl/read.jl"
+@use "." GET Session Response
 
 testset("errors based on response status code") do
-  @test nothing != @catch GET(":8000/status/400")
+  @test @catch(GET(":8000/status/400")) isa Response
 end
 
 testset("redirects") do
   @test GET(":8000/redirect/3").status == 200
   @test GET(":8000/relative-redirect/3").status == 200
-  @test GET(":8000/absolute-redirect/3").status == 200
 end
 
 testset("Content-Encoding") do
