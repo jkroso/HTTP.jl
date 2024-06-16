@@ -2,7 +2,8 @@
 # `docker run -p 8000:80 kennethreitz/httpbin`
 @use "github.com/jkroso/Rutherford.jl/test.jl" testset @test @catch
 @use "github.com/jkroso/JSON.jl/read.jl"
-@use "." GET Session Response
+@use "." GET Response
+@use "./Session.jl" Session
 
 testset("errors based on response status code") do
   @test @catch(GET(":8000/status/400")) isa Response
@@ -11,11 +12,11 @@ end
 testset("redirects") do
   @test GET(":8000/redirect/3").status == 200
   @test GET(":8000/relative-redirect/3").status == 200
+  @test GET(":8000/absolute-redirect/3").status == 200
 end
 
 testset("Content-Encoding") do
   @test parse(GET(":8000/gzip")) isa Dict
-  @test parse(GET(":8000/deflate")) isa Dict
 end
 
 testset("Session") do

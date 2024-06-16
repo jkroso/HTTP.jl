@@ -1,32 +1,30 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
 @use "github.com/jkroso/Prospects.jl" assoc
 @use "../status" messages
-@use CodecZlib: GzipDecompressorStream
+@use "./SSL.jl"
+@use CodecZlib: transcode, GzipDecompressor
+@use SimpleBufferStream: BufferStream, mem_usage
 @use Sockets: connect, TCPSocket
-@use OpenSSL
 @use Dates
 
-const default_uri = URI("http://localhost:80")
+# TODO: PR this into upstream project
+Base.bytesavailable(io::BufferStream) = mem_usage(io)
 
-connect(uri::URI{protocol}) where protocol = error("$protocol not supported")
-connect(uri::URI{:http}) = connect(uri.host, port(uri))
-connect(uri::URI{:https}) = begin
-  ssl = OpenSSL.SSLStream(connect(s.uri.host, s.uri.port))
-  OpenSSL.hostname!(ssl, s.uri.host)
-  OpenSSL.connect(ssl)
-  ssl
-end
+const default_uri = URI("http://localhost/")
+
+connect(uri::URI{:http}) = connect(uri.host, uri.port)
 
 mutable struct Response <: IO
-  status::UInt16
-  meta::Dict{String,Union{String,Vector{String}}}
+  status::Int16
+  meta::AbstractDict
   data::IO
   uri::URI
 end
 
 Base.eof(io::Response) = eof(io.data)
+Base.isopen(io::Response) = isopen(io.data)
 Base.read(io::Response) = read(io.data)
-Base.read(io::Response, T::Type) = read(io.data, T)
+Base.read(io::Response, ::Type{UInt8}) = read(io.data, UInt8)
 Base.read(io::Response, n::Integer) = read(io.data, n)
 Base.bytesavailable(io::Response) = bytesavailable(io.data)
 Base.readavailable(io::Response) = readavailable(io.data)
@@ -42,11 +40,13 @@ end
 
 "Make an HTTP request to `uri` blocking until a response is received"
 function request(verb, uri::URI, meta::Dict, data, io::IO=connect(uri))
-  write(io, verb, ' ', path(uri), b" HTTP/1.1")
+  write(io, verb, ' ', path(uri), " HTTP/1.1", CRLF)
   for (key, value) in meta
-    write(io, CRLF, string(key), ": ", string(value))
+    write(io, key, ": ", value, CRLF)
   end
-  write(io, CRLF, CRLF, data)
+  write(io, "Content-Length: $(sizeof(data))", CRLF)
+  write(io, "Host: $(uri.host)", CRLF)
+  write(io, CRLF, data)
   handle_response(io, uri)
 end
 
@@ -64,239 +64,122 @@ end
 function handle_response(io::IO, uri::URI)
   line = readline(io)
   status = parse(Int, line[10:12])
-  meta = Dict{String,Union{String,Vector{String}}}()
-
-  for line in eachline(io)
-    isempty(line) && break
-    key,value = split(line, ":")
-    key = lowercase(key)
-    value = strip(value)
-    # Set-Cookie can appear multiple times
-    if key == "set-cookie"
-      push!(get!(Vector{String}, meta, key), value)
-    else
-      meta[key] = convert(String, value)
-    end
-  end
-
-  output = if haskey(meta, "content-length")
-    IOBuffer(read(io, parse(Int, meta["content-length"])))
-  elseif get(meta, "transfer-encoding", "") == "chunked"
-    unchunk(io)
-  else
-    io
-  end
+  meta = parse_header(io)
+  body = readbody(meta, io)
 
   encoding = lowercase(get(meta, "content-encoding", ""))
-  if encoding != ""
-    delete!(meta, "content-encoding")
-    delete!(meta, "content-length")
-    if encoding == "gzip" || encoding == "deflate"
-      output = GzipDecompressorStream(output)
+  if !isempty(encoding)
+    if encoding == "gzip"
+      buf = read(body)
+      body = IOBuffer(transcode(GzipDecompressor, buf))
     else
       error("unknown encoding: $encoding")
     end
   end
 
-  Response(status, meta, output, uri)
+  Response(status, meta, body, uri)
 end
 
-# Unfortunatly OpenSSL doesn't provide a very nice stream so we copy the data to a nicer IO type
-function handle_response(io::IO, uri::URI{:https})
-  buffer = PipeBuffer()
-  main_task = current_task()
-  @async try
-    while !eof(io) && isopen(buffer)
-      write(buffer, readavailable(io))
-    end
-    close(buffer)
-    close(io)
-  catch e
-    Base.throwto(main_task, e)
+parse_header(io) = begin
+  meta = Base.ImmutableDict{AbstractString,AbstractString}()
+  for line in eachline(io)
+    isempty(line) && break
+    key,value = split(line, ':', limit=2)
+    meta = assoc(meta, lowercase(key), strip(value))
   end
-  invoke(handle_response, Tuple{IO, URI}, buffer, uri)
+  meta
 end
 
-"Handle the [HTTP chunk format](https://tools.ietf.org/html/rfc2616#section-3.6)"
-function unchunk(io::IO)
-  main_task = current_task()
-  out = PipeBuffer()
-  @async try
+readbody(r::Response) = readbody(r.meta, r.data)
+readbody(meta, io) = begin
+  get(meta, "transfer-encoding", "") == "chunked" && return unchunk(io)
+  len = get(meta, "content-length", "")
+  if !isempty(len)
+    buffer = BufferStream()
+    write(buffer, read(io, parse(Int, len)))
+    close(buffer)
+    return buffer
+  end
+  error("unknown content length")
+end
+
+unchunk(io) = begin
+  buffer = BufferStream()
+  errormonitor(@async begin
     while !eof(io)
       line = readline(io)
       len = parse(Int, line, base=16)
-      if len == 0
-        trailer = readuntil(io, "\r\n")
-        close(out)
-        break
-      else
-        write(out, read(io, len))
-        @assert read(io, 2) == CRLF
-      end
+      len == 0 && break
+      @assert write(buffer, read(io, len)) == len
+      @assert read(io, 2) == CRLF
     end
-  catch e
-    Base.throwto(main_task, e)
-  end
-  out
+    # discard trailer
+    while !eof(io)
+      isempty(readline(io)) && break
+    end
+    close(buffer)
+  end)
+  buffer
 end
 
-port(uri::URI{:http}) = uri.port == 0 ? 80 : uri.port
-port(uri::URI{:https}) = uri.port == 0 ? 443 : uri.port
+const default_headers = assoc(Base.ImmutableDict{AbstractString,AbstractString}(),
+  "User-Agent", "Julia/$VERSION",
+  "Accept-Encoding", "gzip",
+  "Connection", "Keep-Alive",
+  "Accept", "*/*")
 
-const default_headers = Dict(
-  "user-agent" => "Julia/$VERSION",
-  "accept-encoding" => "gzip, deflate",
-  "connection" => "keep-alive",
-  "accept" => "*/*")
-
-# A surprising number of web servers expect to receive esoteric crap in their HTTP
-#requests so lets send it to everyone so nobody ever needs to think about it
-function with_bs(meta::Dict, uri::URI, data::AbstractString)
-  meta = merge(default_headers, meta)
-  get!(meta, "host", "$(uri.host):$(port(uri))")
-  get!(meta, "content-length", string(sizeof(data)))
-  return meta
-end
-
-# An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses
+"An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses"
 function handle_request(verb, uri, meta, data; max_redirects=5)
-  meta = with_bs(meta, uri, data)
+  meta = merge(default_headers, meta)
   io = connect(uri)
-  r = request(verb, uri, meta, data, io)
-  redirects = URI[]
-  while r.status >= 300
-    r.status >= 400 && (close(io); throw(r))
-    @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
-    push!(redirects, uri)
-    length(redirects) > max_redirects && error("too many redirects")
-    uri = URI(r.meta["location"], defaults=uri)
-    read(r.data) # skip the data
-    r = request("GET", uri, meta, "", io)
+  resp = request(verb, uri, meta, data, io)
+  seen = URI[uri]
+  while resp.status >= 300
+    resp.status >= 400 && (close(io); throw(resp))
+    redirect = interpret_redirect(uri, resp.meta["location"])
+    @assert !(redirect ∈ seen) "redirect loop $uri ∈ $seen"
+    push!(seen, redirect)
+    length(seen) > max_redirects && error("too many redirects")
+    if !canreuse(resp.meta, uri, redirect)
+      close(io)
+      io = connect(redirect)
+    end
+    readbody(resp) # skip the data
+    uri = redirect
+    resp = request("GET", uri, meta, "", io)
   end
   close(io)
-  return r
+  resp
+end
+
+canreuse(meta, a, b) = samehost(a, b) && get(meta, "connection", "") == "keep-alive"
+samehost(a::URI, b::URI) = a.host == b.host && a.port == b.port
+
+interpret_redirect(uri, redirect) = begin
+  if startswith(redirect, "/")
+    URI(redirect, defaults=uri)
+  elseif occursin(r"^\w+://", redirect)
+    parseURI(redirect, uri)
+  else
+    assoc(uri, :path, fs"/" * uri.path * ("../" * redirect))
+  end
 end
 
 "Use the Response's mime type to parse a richer data type from its body"
-function Base.parse(r::Response)
-  mime = MIME(split(get(r.meta, "content-type", ""), ';')[1])
-  parse(mime, r.data)
+Base.parse(r::Response) = parse(MIME(split(r.meta["content-type"], ';')[1]), r.data)
+
+parseURI(str, defaults=default_uri) = begin
+   uri = URI(str, defaults=defaults)
+   uri.port > 0 && return uri
+   assoc(uri, :port, uri.protocol == :http ? 80 : 443)
 end
-
-struct Cookie
-  name::String
-  value::String
-  path::String
-  domain::String
-  expires::Union{Nothing,Dates.DateTime}
-  secure::Bool    # restrict to https requests
-  hostonly::Bool  # should this cookie be sent to subdomains
-end
-
-parse_cookie(str::AbstractString, uri::URI, now::Dates.DateTime) = begin
-  (kv, attrs...) = split(str, ';')
-  name, value = map(strip, split(kv, '='))
-  dict = Dict{String,String}()
-  for attr in attrs
-    kv = split(attr, '=')
-    dict[strip(kv[1])] = strip(get(kv, 2, ""))
-  end
-  Cookie(name,
-         value,
-         get(dict, "Path", "/"),
-         get(dict, "Domain", uri.host),
-         if haskey(dict, "Expires")
-           Dates.DateTime(dict["Expires"], Dates.dateformat"e, d u y H:M:S G\MT")
-         elseif haskey(dict, "Max-Age")
-           now + Dates.Second(parse(Int, dict["Max-Age"]))
-         else
-           nothing
-         end,
-         haskey(dict, "Secure"),
-         !haskey(dict, "Domain"))
-end
-
-mutable struct Session
-  uri::URI
-  cookies::Dict{String,Cookie}
-  connection::Union{IO,Nothing}
-  lock::ReentrantLock
-end
-
-Session(uri::URI) = Session(uri, Dict{String,Cookie}(), nothing, ReentrantLock())
-Session(uri::AbstractString) = Session(URI(uri, defaults=default_uri))
-
-"Get an active TCPSocket associated with the sessions server"
-connect(s::Session) = begin
-  if !isopen(s)
-    s.connection = connect(s.uri)
-  end
-  s.connection
-end
-
-Base.isopen(s::Session) = s.connection != nothing && isopen(s.connection)
-
-handle_request(s::Session, verb::AbstractString, path::AbstractString, meta, body; max_redirects=5) =
-  lock(s.lock) do
-    io = connect(s)
-    now = Dates.now()
-    filter!(kv -> !isexpired(now, kv[2]), s.cookies)
-    uri = URI(path, defaults=s.uri)
-    meta = with_bs(assoc(meta, "connection", "keep-alive"), uri, body)
-    res = request(s, now, verb, uri, meta, body, io)
-    redirects = URI[]
-    while res.status >= 300
-      res.status >= 400 && throw(r)
-      @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
-      push!(redirects, uri)
-      length(redirects) > max_redirects && error("too many redirects")
-      uri = URI(res.meta["location"], defaults=uri)
-      res = request(s, now, "GET", uri, meta, "")
-    end
-    res
-  end
-
-request(s::Session, now::Dates.DateTime, verb::String, uri::URI, meta, data, io=connect(s)) = begin
-  cookies = filter(collect(values(s.cookies))) do c
-    if c.hostonly
-      uri.host == c.domain
-    else
-      endswith(uri.host, c.domain)
-    end
-  end
-  if !isempty(cookies)
-    meta = assoc(meta, "cookie", join(("$(c.name)=$(c.value)" for c in cookies), "; "))
-  end
-  res = request(verb, uri, meta, data, io)
-  add_cookies(s, res, now)
-  # needs to be buffered since the TCPSocket might get used for other requests
-  # before anyone has had the chance the fully read the data from this request
-  res.data = IOBuffer(read(res.data))
-  if get(res.meta, "connection", "keep-alive") == "close"
-    close(io)
-  end
-  res
-end
-
-isexpired(now::Dates.DateTime, c::Cookie) = c.expires != nothing && c.expires <= now
-
-add_cookies(s::Session, res::Response, now::Dates.DateTime) =
-  for str in get(Vector{String}, res.meta, "set-cookie")
-    c = parse_cookie(str, res.uri, now)
-    if isexpired(now, c)
-      delete!(s.cookies, c.name)
-    else
-      s.cookies[c.name] = c
-    end
-  end
 
 # Create convenience methods for the common HTTP verbs so you can simply write `GET("github.com")`
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
-    function $f(uri::URI; meta::Dict=Dict(), data::AbstractString="")
-      handle_request($(string(f)), uri, meta, data)
+    function $f(uri::URI; meta::Dict=Dict(), data::AbstractString="", kwargs...)
+      handle_request($(string(f)), uri, meta, data; kwargs...)
     end
-    $f(uri::AbstractString; args...) = $f(URI(uri, defaults=default_uri); args...)
-    $f(s::Session, path::AbstractString; meta=Dict(), body="") = handle_request(s, $(string(f)), path, meta, body)
+    $f(uri::AbstractString; args...) = $f(parseURI(uri); args...)
   end
 end
