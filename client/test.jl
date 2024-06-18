@@ -1,8 +1,9 @@
 # The server should first be started with:
 # `docker run -p 8000:80 kennethreitz/httpbin`
 @use "github.com/jkroso/Rutherford.jl/test.jl" testset @test @catch
+@use "github.com/jkroso/JSON.jl/write.jl"
 @use "github.com/jkroso/JSON.jl/read.jl"
-@use "." GET Response
+@use "." GET PUT Response
 @use "./Session.jl" Session
 
 testset("errors based on response status code") do
@@ -17,6 +18,10 @@ end
 
 testset("Content-Encoding") do
   @test parse(GET(":8000/gzip")) isa Dict
+end
+
+testset("write") do
+  @test parse(write(PUT(":8000/put"), MIME("application/json"), [1,2,3]))["json"] == [1,2,3]
 end
 
 testset("Session") do

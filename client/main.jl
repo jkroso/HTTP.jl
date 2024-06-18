@@ -1,5 +1,5 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
-@use "github.com/jkroso/Prospects.jl" assoc
+@use "github.com/jkroso/Prospects.jl" assoc @mutable
 @use "../status" messages
 @use "./SSL.jl"
 @use CodecZlib: transcode, GzipDecompressor
@@ -11,14 +11,77 @@
 Base.bytesavailable(io::BufferStream) = mem_usage(io)
 
 const default_uri = URI("http://localhost/")
+const CRLF = b"\r\n"
 
 connect(uri::URI{:http}) = connect(uri.host, uri.port)
 
-mutable struct Response <: IO
+@mutable struct Request{verb} <: IO
+  uri::URI
+  sock::IO
+  meta::AbstractDict=Base.ImmutableDict{String,String}()
+  max_redirects::Int=5
+  headers_started::Bool=false
+  headers_finished::Bool=false
+end
+
+Base.write(io::Request, mime::MIME, data) = begin
+  io.headers_started || start_headers(io)
+  @assert !io.headers_finished
+  bytes = sprint(show, mime, data)
+  write(io.sock, "Content-Type: $mime\r\n")
+  write(io.sock, "Content-Length: $(sizeof(bytes))\r\n\r\n", bytes)
+  parse_response(io.sock)
+end
+
+Base.write(io::Request, b::UInt8) = begin
+  io.headers_finished || start_body(io)
+  write(io.sock, string(1, base=16), CRLF)
+  write(io.sock , b, CRLF)
+end
+
+Base.write(io::Request, b::Vector{UInt8}) = begin
+  io.headers_finished || start_body(io)
+  write(io.sock, string(sizeof(b), base=16), CRLF)
+  write(io.sock , b, CRLF)
+end
+Base.write(io::Request, b::Union{String,SubString{String}}) = write(io, Vector{UInt8}(b))
+
+start_headers(req::Request{verb}) where verb = begin
+  req.headers_started = true
+  write(req.sock, verb, ' ', path(req.uri), " HTTP/1.1\r\n")
+  write(req.sock, "Host: $(req.uri.host)\r\n")
+  write(req.sock, "User-Agent: Julia/$VERSION\r\n")
+  write(req.sock, "Accept-Encoding: gzip\r\n")
+  write(req.sock, "Connection: Keep-Alive\r\n")
+  haskey(req.meta, "accept") || write(req.sock, "Accept: */*\r\n")
+  for (key, value) in req.meta
+    write(req.sock, key, ": ", value, CRLF)
+  end
+end
+
+start_body(req::Request) = begin
+  req.headers_started || start_headers(req)
+  write(req.sock, "Transfer-Encoding: chunked\r\n\r\n")
+  req.headers_finished = true
+end
+
+write_body(req::Request, data) = begin
+  req.headers_started || start_headers(req)
+  write(req.sock, "Content-Length: $(sizeof(data))\r\n\r\n", data)
+  req.headers_finished = true
+  parse_response(req.sock)
+end
+
+Base.close(req::Request) = begin
+  req.headers_finished || start_body(req)
+  write(req.sock, "0\r\n\r\n")
+  parse_response(req.sock)
+end
+
+@mutable struct Response <: IO
   status::Int16
   meta::AbstractDict
   data::IO
-  uri::URI
 end
 
 Base.eof(io::Response) = eof(io.data)
@@ -38,20 +101,6 @@ function Base.show(io::IO, r::Response)
   println(io, bytesavailable(r), " bytes waiting")
 end
 
-"Make an HTTP request to `uri` blocking until a response is received"
-function request(verb, uri::URI, meta::Dict, data, io::IO=connect(uri))
-  write(io, verb, ' ', path(uri), " HTTP/1.1", CRLF)
-  for (key, value) in meta
-    write(io, key, ": ", value, CRLF)
-  end
-  write(io, "Content-Length: $(sizeof(data))", CRLF)
-  write(io, "Host: $(uri.host)", CRLF)
-  write(io, CRLF, data)
-  handle_response(io, uri)
-end
-
-const CRLF = b"\r\n"
-
 function path(uri::URI)
   str = encode(string(uri.path))
   query = encode_query(uri.query)
@@ -61,9 +110,8 @@ function path(uri::URI)
 end
 
 "Parse incoming HTTP data into a `Response`"
-function handle_response(io::IO, uri::URI)
-  line = readline(io)
-  status = parse(Int, line[10:12])
+function parse_response(io::IO)
+  status = parse_status(io)
   meta = parse_header(io)
   body = readbody(meta, io)
 
@@ -77,10 +125,12 @@ function handle_response(io::IO, uri::URI)
     end
   end
 
-  Response(status, meta, body, uri)
+  Response(status, meta, body)
 end
 
-parse_header(io) = begin
+parse_status(io::IO) = parse(Int, readline(io)[10:12])
+
+parse_header(io::IO) = begin
   meta = Base.ImmutableDict{AbstractString,AbstractString}()
   for line in eachline(io)
     isempty(line) && break
@@ -122,39 +172,6 @@ unchunk(io) = begin
   buffer
 end
 
-const default_headers = assoc(Base.ImmutableDict{AbstractString,AbstractString}(),
-  "User-Agent", "Julia/$VERSION",
-  "Accept-Encoding", "gzip",
-  "Connection", "Keep-Alive",
-  "Accept", "*/*")
-
-"An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses"
-function handle_request(verb, uri, meta, data; max_redirects=5)
-  meta = merge(default_headers, meta)
-  io = connect(uri)
-  resp = request(verb, uri, meta, data, io)
-  seen = URI[uri]
-  while resp.status >= 300
-    resp.status >= 400 && (close(io); throw(resp))
-    redirect = interpret_redirect(uri, resp.meta["location"])
-    @assert !(redirect ∈ seen) "redirect loop $uri ∈ $seen"
-    push!(seen, redirect)
-    length(seen) > max_redirects && error("too many redirects")
-    if !canreuse(resp.meta, uri, redirect)
-      close(io)
-      io = connect(redirect)
-    end
-    readbody(resp) # skip the data
-    uri = redirect
-    resp = request("GET", uri, meta, "", io)
-  end
-  close(io)
-  resp
-end
-
-canreuse(meta, a, b) = samehost(a, b) && get(meta, "connection", "") == "keep-alive"
-samehost(a::URI, b::URI) = a.host == b.host && a.port == b.port
-
 interpret_redirect(uri, redirect) = begin
   if startswith(redirect, "/")
     URI(redirect, defaults=uri)
@@ -177,9 +194,38 @@ end
 # Create convenience methods for the common HTTP verbs so you can simply write `GET("github.com")`
 for f in [:GET, :POST, :PUT, :DELETE]
   @eval begin
-    function $f(uri::URI; meta::Dict=Dict(), data::AbstractString="", kwargs...)
-      handle_request($(string(f)), uri, meta, data; kwargs...)
+    $f(uri::AbstractString; kwargs...) = $f(parseURI(uri); kwargs...)
+    $f(uri::URI; data=nothing, kwargs...) = begin
+      req = Request{$(QuoteNode(f))}(uri=uri, sock=connect(uri); kwargs...)
+      isnothing(data) || return run(req, data)
+      $(f in (:GET, :DELETE) ? :(run(req)) : :(req))
     end
-    $f(uri::AbstractString; args...) = $f(parseURI(uri); args...)
   end
 end
+
+Base.run(req::Request, data="") = begin
+  res = write_body(req, data)
+  handle_response(res, req, [req.uri], data)
+end
+
+"An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses"
+handle_response(res::Response, (;sock,uri,meta,max_redirects)::Request{verb}, seen::Vector, data::Any="") where verb = begin
+  res.status >= 400 && (close(sock); throw(res))
+  if res.status >= 300
+    redirect = interpret_redirect(uri, res.meta["location"])
+    @assert !(redirect in seen) "redirect loop $uri in $seen"
+    max_redirects < 1 && error("too many redirects")
+    if !canreuse(res.meta, uri, redirect)
+      close(sock)
+      sock = connect(redirect)
+    end
+    readbody(res) # skip the data
+    req = Request{verb}(uri=redirect, meta=meta, sock=sock, max_redirects=max_redirects-1)
+    return handle_response(write_body(req, data), req, push!(seen, redirect), data)
+  end
+  close(sock)
+  res
+end
+
+canreuse(meta, a, b) = samehost(a, b) && get(meta, "connection", "") == "keep-alive"
+samehost(a::URI, b::URI) = a.host == b.host && a.port == b.port
