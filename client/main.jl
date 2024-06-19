@@ -205,7 +205,9 @@ end
 
 Base.run(req::Request, data="") = begin
   res = write_body(req, data)
-  handle_response(res, req, [req.uri], data)
+  res = handle_response(res, req, [req.uri], data)
+  close(req.sock)
+  res
 end
 
 "An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses"
@@ -223,7 +225,6 @@ handle_response(res::Response, (;sock,uri,meta,max_redirects)::Request{verb}, se
     req = Request{verb}(uri=redirect, meta=meta, sock=sock, max_redirects=max_redirects-1)
     return handle_response(write_body(req, data), req, push!(seen, redirect), data)
   end
-  close(sock)
   res
 end
 

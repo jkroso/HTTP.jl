@@ -1,16 +1,16 @@
-@use "." URI Response default_uri GET PUT POST default_headers request handle_request
-@use "github.com/jkroso/Prospects.jl" assoc
+@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse
+@use "github.com/jkroso/Prospects.jl" assoc assoc_in @struct @mutable
 @use Sockets: connect, TCPSocket
 @use Dates
 
-struct Cookie
+@struct struct Cookie
   name::String
   value::String
   path::String
   domain::String
-  expires::Union{Nothing,Dates.DateTime}
-  secure::Bool    # restrict to https requests
-  hostonly::Bool  # should this cookie be sent to subdomains
+  expires::Union{Nothing,Dates.DateTime}=nothing
+  secure::Bool=false # restrict to https requests
+  hostonly::Bool=false# should this cookie be sent to subdomains
 end
 
 parse_cookie(str::AbstractString, uri::URI, now::Dates.DateTime) = begin
@@ -21,101 +21,100 @@ parse_cookie(str::AbstractString, uri::URI, now::Dates.DateTime) = begin
     kv = split(attr, '=')
     dict[strip(kv[1])] = strip(get(kv, 2, ""))
   end
-  Cookie(name,
-         value,
-         get(dict, "Path", "/"),
-         get(dict, "Domain", uri.host),
-         if haskey(dict, "Expires")
-           Dates.DateTime(dict["Expires"], Dates.dateformat"e, d u y H:M:S G\MT")
-         elseif haskey(dict, "Max-Age")
-           now + Dates.Second(parse(Int, dict["Max-Age"]))
-         else
-           nothing
-         end,
-         haskey(dict, "Secure"),
-         !haskey(dict, "Domain"))
+  expires = if haskey(dict, "Expires")
+    Dates.DateTime(dict["Expires"], Dates.dateformat"e, d u y H:M:S G\MT")
+  elseif haskey(dict, "Max-Age")
+    now + Dates.Second(parse(Int, dict["Max-Age"]))
+  else
+    nothing
+  end
+  Cookie(name=name,
+         value=value,
+         path=get(dict, "Path", "/"),
+         domain=get(dict, "Domain", uri.host),
+         expires=expires,
+         secure=haskey(dict, "Secure"),
+         hostonly=!haskey(dict, "Domain"))
 end
 
-mutable struct Session
+@mutable struct Session
   uri::URI
-  cookies::Dict{String,Cookie}
-  connection::Union{IO,Nothing}
-  lock::ReentrantLock
+  cookies::Dict{String,Cookie}=Dict{String,Cookie}()
+  sock::Union{IO,Nothing}=nothing
+  lock::ReentrantLock=ReentrantLock()
 end
 
-Session(uri::URI) = Session(uri, Dict{String,Cookie}(), nothing, ReentrantLock())
-Session(uri::AbstractString) = Session(URI(uri, defaults=default_uri))
+Session(uri::URI) = Session(uri=uri, sock=connect(uri))
+Session(uri::AbstractString) = Session(parseURI(uri))
 
-"Get an active TCPSocket associated with the sessions server"
-connect(s::Session) = begin
-  if !isopen(s)
-    s.connection = connect(s.uri)
-  end
-  s.connection
+Base.isopen(s::Session) = s.sock != nothing && isopen(s.sock) && isreadable(s.sock) && iswritable(s.sock)
+connect(s::Session) = isopen(s) ? s.sock : (s.sock = connect(s.uri))
+Base.getindex(s::Session, path) = run(SessionRequest(s, :GET, path, connect(s), Dates.now()))
+
+@struct struct SessionRequest{verb} <: IO
+  session::Session
+  request::Request{verb}
+  max_redirects::Int=5
 end
 
-Base.isopen(s::Session) = s.connection != nothing && isopen(s.connection)
+Base.run(sr::SessionRequest{:GET}) = begin
+  try
+    run_request(sr, Dates.now(), [sr.request.uri])
+  catch e
+    because_closed(e) || rethrow(e)
+    sock = connect(sr.session.uri)
+    sr.session.sock = sock
+    run(SessionRequest{:GET}(sr.session, assoc(sr.request, :sock, sock)))
+  end
+end
 
-handle_request(s::Session, verb::AbstractString, path::AbstractString, meta, body; max_redirects=5) =
-  lock(s.lock) do
-    io = connect(s)
-    now = Dates.now()
-    filter!(kv -> !isexpired(now, kv[2]), s.cookies)
-    uri = URI(path, defaults=s.uri)
-    meta = merge(default_headers, meta)
-    res = request(s, now, verb, uri, meta, body, io)
-    redirects = URI[]
-    while res.status >= 300
-      res.status >= 400 && throw(r)
-      @assert !(uri ∈ redirects) "redirect loop $uri ∈ $redirects"
-      push!(redirects, uri)
-      length(redirects) > max_redirects && error("too many redirects")
-      uri = URI(res.meta["location"], defaults=uri)
-      res = request(s, now, "GET", uri, meta, "")
-    end
-    res
-  end
+because_closed(e::Base.IOError) = e.code == -32
+because_closed(e::BoundsError) = e.i == 10:12
+because_closed(e) = false
 
-request(s::Session, now::Dates.DateTime, verb::String, uri::URI, meta, data, io=connect(s)) = begin
-  cookies = filter(collect(values(s.cookies))) do c
-    if c.hostonly
-      uri.host == c.domain
-    else
-      endswith(uri.host, c.domain)
+run_request((;session,request)::SessionRequest{:GET}, now, seen) = begin
+  (;max_redirects, uri, sock, meta) = request
+  res = write_body(request, "")
+  for cookie in get_cookies(res.meta, uri, now)
+    isexpired(cookie, now) && continue
+    session.cookies[cookie.name] = cookie
+  end
+  res.status >= 400 && throw(res)
+  if res.status >= 300
+    redirect = interpret_redirect(uri, res.meta["location"])
+    @assert !(redirect in seen) "redirect loop $uri in $seen"
+    max_redirects < 1 && error("too many redirects")
+    if !canreuse(res.meta, uri, redirect)
+      sock = connect(redirect)
     end
-  end
-  if !isempty(cookies)
-    meta = assoc(meta, "cookie", join(("$(c.name)=$(c.value)" for c in cookies), "; "))
-  end
-  res = request(verb, uri, meta, data, io)
-  add_cookies(s, res, now)
-  # needs to be buffered since the TCPSocket might get used for other requests
-  # before anyone has had the chance the fully read the data from this request
-  res.data = IOBuffer(read(res.data))
-  if get(res.meta, "connection", "keep-alive") == "close"
-    close(io)
+    readbody(res) # skip the data
+    sr = SessionRequest(session, :GET, redirect, sock, now)
+    sr = assoc_in(sr, [:request, :max_redirects]=>max_redirects-1)
+    return run_request(sr, now, push!(seen, redirect))
   end
   res
 end
 
-isexpired(now::Dates.DateTime, c::Cookie) = c.expires != nothing && c.expires <= now
-
-get_cookies(r::Response, now=Dates.now()) = begin
-  Cookie[parse_cookie(v, r.uri, now) for (k,v) in r.meta if k == "set-cookie"]
+SessionRequest(s::Session, verb::Symbol, path, sock, now) = begin
+  uri = parseURI(path, s.uri)
+  uri = assoc(uri, :path, s.uri.path * uri.path)
+  SessionRequest(s, verb, uri, sock, now)
 end
 
-add_cookies(s::Session, res::Response, now::Dates.DateTime) = begin
-  for c in get_cookies(res, now)
-    if isexpired(now, c)
-      delete!(s.cookies, c.name)
-    else
-      s.cookies[c.name] = c
-    end
+SessionRequest(s::Session, verb::Symbol, uri::URI, sock, now) = begin
+  cookies = Iterators.filter(values(s.cookies)) do c
+    isexpired(c, now) && return false
+    c.hostonly ? uri.host == c.domain : endswith(uri.host, c.domain)
   end
+  meta = Base.ImmutableDict{String,String}()
+  if !isempty(cookies)
+    meta = assoc(meta, "cookie", join(("$(c.name)=$(c.value)" for c in cookies), "; "))
+  end
+  SessionRequest{verb}(s, Request{verb}(uri, sock, meta))
 end
 
-for f in [:GET, :POST, :PUT, :DELETE]
-  @eval begin
-    $f(s::Session, path::AbstractString; meta=Dict(), body="") = handle_request(s, $(string(f)), path, meta, body)
-  end
+isexpired(c::Cookie, now::Dates.DateTime=Dates.now()) = c.expires != nothing && c.expires <= now
+
+get_cookies(meta, uri, now=Dates.now()) = begin
+  Cookie[parse_cookie(v, uri, now) for (k,v) in meta if k == "set-cookie"]
 end

@@ -26,6 +26,6 @@ end
 
 testset("Session") do
   s = Session(":8000")
-  @test parse(GET(s, "/cookies/set?a=1")) == Dict("cookies"=>Dict("a"=>"1"))
-  @test parse(GET(s, "/cookies/set?b=2")) == Dict("cookies"=>Dict("a"=>"1","b"=>"2"))
+  @test parse(s["/cookies/set?a=1"]) == Dict("cookies"=>Dict("a"=>"1"))
+  @test parse(s["/cookies/set?b=2"]) == Dict("cookies"=>Dict("a"=>"1","b"=>"2"))
 end

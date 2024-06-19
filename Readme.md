@@ -17,3 +17,13 @@ dom = parse(GET("google.com")) # a DOM object
 
 write(PUT("gewgle.com"), MIME("text/html"), dom)
 ```
+
+This library also provides a `Session` type that keeps track of cookies, reuses sockets, and provides a ORM like API for interacting with HTTP servers
+
+```julia
+@use "github.com/jkroso/HTTP.jl/client/Session" Session
+
+httpbin = Session("httpbin.org")
+response = httpbin["/cookies/set?a=1"]
+parse(MIME"application/json", response) == Dict("cookies"=>Dict("a"=>1))
+```
