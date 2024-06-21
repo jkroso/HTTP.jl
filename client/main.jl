@@ -134,7 +134,8 @@ function parse_response(io::IO)
   encoding = lowercase(get(meta, "content-encoding", ""))
   if !isempty(encoding)
     if encoding == "gzip"
-      body = IOBuffer(transcode(GzipDecompressor, copy(read(body))))
+      body = Buffer(transcode(GzipDecompressor, copy(read(body))))
+      close(body)
     else
       error("unknown encoding: $encoding")
     end
@@ -160,8 +161,7 @@ readbody(meta, io) = begin
   get(meta, "transfer-encoding", "") == "chunked" && return unchunk(io)
   len = get(meta, "content-length", "")
   if !isempty(len)
-    buffer = Buffer()
-    write(buffer, read(io, parse(Int, len)))
+    buffer = Buffer(copy(read(io, parse(Int, len))))
     close(buffer)
     return buffer
   end
