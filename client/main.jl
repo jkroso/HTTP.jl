@@ -1,19 +1,35 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
+@use "github.com/jkroso/Buffer.jl" Buffer ["ReadBuffer.jl" ReadBuffer]
 @use "github.com/jkroso/Prospects.jl" assoc @mutable
-@use "../status" messages
-@use "./SSL.jl"
 @use CodecZlib: transcode, GzipDecompressor
-@use SimpleBufferStream: BufferStream, mem_usage
 @use Sockets: connect, TCPSocket
+@use "../status" messages
+@use MbedTLS
 @use Dates
-
-# TODO: PR this into upstream project
-Base.bytesavailable(io::BufferStream) = mem_usage(io)
 
 const default_uri = URI("http://localhost/")
 const CRLF = b"\r\n"
 
 connect(uri::URI{:http}) = connect(uri.host, uri.port)
+
+connect(uri::URI{:https}) = begin
+  conf = MbedTLS.SSLConfig()
+  MbedTLS.config_defaults!(conf)
+  rng = MbedTLS.CtrDrbg()
+  MbedTLS.seed!(rng, MbedTLS.Entropy())
+  MbedTLS.rng!(conf, rng)
+  MbedTLS.authmode!(conf, MbedTLS.MBEDTLS_SSL_VERIFY_REQUIRED)
+  MbedTLS.dbg!(conf, function(level, filename, number, msg)
+    warn("MbedTLS emitted debug info: $msg in $filename:$number")
+  end)
+  MbedTLS.ca_chain!(conf)
+  sock = MbedTLS.SSLContext()
+  MbedTLS.setup!(sock, conf)
+  MbedTLS.set_bio!(sock, connect(uri.host, uri.port))
+  MbedTLS.hostname!(sock, uri.host)
+  MbedTLS.handshake(sock)
+  ReadBuffer(sock)
+end
 
 @mutable struct Request{verb} <: IO
   uri::URI
@@ -118,8 +134,7 @@ function parse_response(io::IO)
   encoding = lowercase(get(meta, "content-encoding", ""))
   if !isempty(encoding)
     if encoding == "gzip"
-      buf = read(body)
-      body = IOBuffer(transcode(GzipDecompressor, buf))
+      body = IOBuffer(transcode(GzipDecompressor, copy(read(body))))
     else
       error("unknown encoding: $encoding")
     end
@@ -145,7 +160,7 @@ readbody(meta, io) = begin
   get(meta, "transfer-encoding", "") == "chunked" && return unchunk(io)
   len = get(meta, "content-length", "")
   if !isempty(len)
-    buffer = BufferStream()
+    buffer = Buffer()
     write(buffer, read(io, parse(Int, len)))
     close(buffer)
     return buffer
@@ -154,7 +169,7 @@ readbody(meta, io) = begin
 end
 
 unchunk(io) = begin
-  buffer = BufferStream()
+  buffer = Buffer()
   errormonitor(@async begin
     while !eof(io)
       line = readline(io)
