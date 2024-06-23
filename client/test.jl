@@ -4,6 +4,7 @@
 @use "github.com/jkroso/JSON.jl/write.jl"
 @use "github.com/jkroso/JSON.jl/read.jl"
 @use "./unchunk.jl" Unchunker
+@use "../Header.jl" Header
 @use "." GET PUT Response
 @use "./Session.jl" Session
 
@@ -42,6 +43,10 @@ testset("unchunk") do
   write(io, string(13, base=16), "\r\n")
   write(io, string(('n':'z')...), "\r\n")
   write(io, string(0, base=16), "\r\n")
+  write(io, "A: b\r\n")
+  write(io, "B: c\r\n")
   write(io, "\r\n")
-  @test read(Unchunker(io)) == UInt8[('a':'z')...]
+  body = Unchunker(io)
+  @test read(body) == UInt8[('a':'z')...]
+  @test wait(body.trailers) == Header("b"=>"c", "a"=>"b")
 end
