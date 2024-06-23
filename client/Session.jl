@@ -1,6 +1,7 @@
 @use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse
 @use "github.com/jkroso/Prospects.jl" assoc assoc_in @struct @mutable
 @use Sockets: connect, TCPSocket
+@use "../Header.jl" Header
 @use Dates
 
 @struct struct Cookie
@@ -106,10 +107,7 @@ SessionRequest(s::Session, verb::Symbol, uri::URI, sock, now) = begin
     isexpired(c, now) && return false
     c.hostonly ? uri.host == c.domain : endswith(uri.host, c.domain)
   end
-  meta = Base.ImmutableDict{String,String}()
-  if !isempty(cookies)
-    meta = assoc(meta, "cookie", join(("$(c.name)=$(c.value)" for c in cookies), "; "))
-  end
+  meta = Header("cookie"=> join(("$(c.name)=$(c.value)" for c in cookies), "; "))
   SessionRequest{verb}(s, Request{verb}(uri, sock, meta))
 end
 

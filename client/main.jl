@@ -3,7 +3,9 @@
 @use "github.com/jkroso/Prospects.jl" assoc @mutable
 @use CodecZlib: transcode, GzipDecompressor
 @use Sockets: connect, TCPSocket
-@use "../status" messages
+@use "../status.jl" messages
+@use "../Header.jl" Header parse_header
+@use "./unchunk.jl" Unchunker
 @use MbedTLS
 @use Dates
 
@@ -34,7 +36,7 @@ end
 @mutable struct Request{verb} <: IO
   uri::URI
   sock::IO
-  meta::AbstractDict=Base.ImmutableDict{String,String}()
+  meta::Header=Header()
   max_redirects::Int=5
   headers_started::Bool=false
   headers_finished::Bool=false
@@ -71,6 +73,7 @@ start_headers(req::Request{verb}) where verb = begin
   write(req.sock, "Connection: Keep-Alive\r\n")
   haskey(req.meta, "accept") || write(req.sock, "Accept: */*\r\n")
   for (key, value) in req.meta
+    isempty(value) && continue
     write(req.sock, key, ": ", value, CRLF)
   end
 end
@@ -96,7 +99,7 @@ end
 
 @mutable struct Response <: IO
   status::Int16
-  meta::AbstractDict
+  meta::Header
   data::IO
 end
 
@@ -146,19 +149,9 @@ end
 
 parse_status(io::IO) = parse(Int, readline(io)[10:12])
 
-parse_header(io::IO) = begin
-  meta = Base.ImmutableDict{AbstractString,AbstractString}()
-  for line in eachline(io)
-    isempty(line) && break
-    key,value = split(line, ':', limit=2)
-    meta = assoc(meta, lowercase(key), strip(value))
-  end
-  meta
-end
-
 readbody(r::Response) = readbody(r.meta, r.data)
 readbody(meta, io) = begin
-  get(meta, "transfer-encoding", "") == "chunked" && return unchunk(io)
+  get(meta, "transfer-encoding", "") == "chunked" && return Unchunker(io)
   len = get(meta, "content-length", "")
   if !isempty(len)
     buffer = Buffer(copy(read(io, parse(Int, len))))
@@ -166,25 +159,6 @@ readbody(meta, io) = begin
     return buffer
   end
   error("unknown content length")
-end
-
-unchunk(io) = begin
-  buffer = Buffer()
-  errormonitor(@async begin
-    while !eof(io)
-      line = readline(io)
-      len = parse(Int, line, base=16)
-      len == 0 && break
-      @assert write(buffer, read(io, len)) == len
-      @assert read(io, 2) == CRLF
-    end
-    # discard trailer
-    while !eof(io)
-      isempty(readline(io)) && break
-    end
-    close(buffer)
-  end)
-  buffer
 end
 
 interpret_redirect(uri, redirect) = begin
