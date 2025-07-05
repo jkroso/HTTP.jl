@@ -1,6 +1,6 @@
-import Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr, IPv4
-@require "../status" messages
-@require "github.com/coiljl/URI" URI
+@use Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr, IPv4
+@use "github.com/jkroso/URI.jl" URI
+@use "../status" messages
 
 struct HTTPServer <: Base.IOServer
   tcp::TCPServer

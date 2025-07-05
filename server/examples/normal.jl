@@ -1,4 +1,4 @@
-@require ".." serve Response Request
+@use ".." serve Response Request
 
 mutable struct RepeatStream <: IO
   remaining::Int
