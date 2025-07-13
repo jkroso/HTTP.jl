@@ -20,7 +20,12 @@ Base.write(io::IO, r::LoggedResponse) = begin
   print(" ← ", BOLD, verb(r.req), RESET, ' ', r.req.uri, ' ')
   print(color[Int(floor(res.status/100))], res.status, ' ')
   print(RESET, humantime(time), ' ')
-  println(humanbytes(bytes))
+  print(humanbytes(bytes))
+  if haskey(res.meta, "Content-Type")
+    println(' ', res.meta["Content-Type"])
+  else
+    println()
+  end
   bytes
 end
 
