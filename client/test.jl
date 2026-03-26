@@ -5,7 +5,7 @@ using Test
 @use "github.com/jkroso/JSON.jl/read.jl"
 @use "./unchunk.jl" Unchunker
 @use "../Header.jl" Header
-@use "." GET POST PUT DELETE Response
+@use "." GET POST PUT DELETE Response send
 @use "./Session.jl" Session
 
 @testset "status codes" begin
@@ -26,14 +26,14 @@ end
 end
 
 @testset "POST" begin
-  res = write(POST(":8000/post"), MIME("application/json"), Dict("a"=>1))
+  res = send(POST(":8000/post"), MIME("application/json"), Dict("a"=>1))
   data = parse(res)
   @test data["json"] == Dict("a"=>1)
   @test data["headers"]["Content-Type"] == "application/json"
 end
 
 @testset "PUT" begin
-  res = write(PUT(":8000/put"), MIME("application/json"), [1,2,3])
+  res = send(PUT(":8000/put"), MIME("application/json"), [1,2,3])
   @test parse(res)["json"] == [1,2,3]
 end
 

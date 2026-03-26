@@ -42,7 +42,7 @@ end
   headers_finished::Bool=false
 end
 
-Base.write(io::Request, mime::MIME, data) = begin
+send(io::Request, mime::MIME, data) = begin
   io.headers_started || start_headers(io)
   @assert !io.headers_finished
   bytes = sprint(show, mime, data)
@@ -51,18 +51,18 @@ Base.write(io::Request, mime::MIME, data) = begin
   parse_response(io.sock)
 end
 
-Base.write(io::Request, b::UInt8) = begin
+send(io::Request, b::UInt8) = begin
   io.headers_finished || start_body(io)
   write(io.sock, string(1, base=16), CRLF)
   write(io.sock , b, CRLF)
 end
 
-Base.write(io::Request, b::Vector{UInt8}) = begin
+send(io::Request, b::Vector{UInt8}) = begin
   io.headers_finished || start_body(io)
   write(io.sock, string(sizeof(b), base=16), CRLF)
   write(io.sock , b, CRLF)
 end
-Base.write(io::Request, b::Union{String,SubString{String}}) = write(io, Vector{UInt8}(b))
+send(io::Request, b::Union{String,SubString{String}}) = send(io, Vector{UInt8}(b))
 
 start_headers(req::Request{verb}) where verb = begin
   req.headers_started = true
