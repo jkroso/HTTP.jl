@@ -1,7 +1,7 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
 @use "github.com/jkroso/Buffer.jl" Buffer ["ReadBuffer.jl" ReadBuffer]
 @use "github.com/jkroso/Prospects.jl" assoc @def
-@use CodecZlib: transcode, GzipDecompressor
+@use CodecZlib: transcode, GzipDecompressor, ZlibDecompressor
 @use Sockets: connect, TCPSocket
 @use "../status.jl" messages
 @use "../Header.jl" Header parse_header
@@ -132,16 +132,17 @@ end
 function parse_response(io::IO)
   status = parse_status(io)
   meta = parse_header(io)
-  body = readbody(meta, io)
+  body = readbody(status, meta, io)
 
   encoding = lowercase(get(meta, "content-encoding", ""))
-  if !isempty(encoding)
-    if encoding == "gzip"
-      body = Buffer(transcode(GzipDecompressor, copy(read(body))))
-      close(body)
-    else
-      error("unknown encoding: $encoding")
-    end
+  if encoding == "gzip"
+    body = Buffer(transcode(GzipDecompressor, copy(read(body))))
+    close(body)
+  elseif encoding == "deflate"
+    body = Buffer(transcode(ZlibDecompressor, copy(read(body))))
+    close(body)
+  elseif !isempty(encoding)
+    error("unknown encoding: $encoding")
   end
 
   Response(status, meta, body)
@@ -149,8 +150,8 @@ end
 
 parse_status(io::IO) = parse(Int, readline(io)[10:12])
 
-readbody(r::Response) = readbody(r.meta, r.data)
-readbody(meta, io) = begin
+readbody(r::Response) = readbody(r.status, r.meta, r.data)
+readbody(status, meta, io) = begin
   get(meta, "transfer-encoding", "") == "chunked" && return Unchunker(io)
   len = get(meta, "content-length", "")
   if !isempty(len)
@@ -158,6 +159,7 @@ readbody(meta, io) = begin
     close(buffer)
     return buffer
   end
+  status in (204, 304) && return Buffer(UInt8[])
   error("unknown content length")
 end
 
