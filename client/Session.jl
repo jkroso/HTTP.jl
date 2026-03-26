@@ -49,6 +49,7 @@ Session(uri::URI) = Session(uri=uri, sock=connect(uri))
 Session(uri::AbstractString) = Session(parseURI(uri))
 
 Base.isopen(s::Session) = s.sock != nothing && isopen(s.sock) && isreadable(s.sock) && iswritable(s.sock)
+Base.close(s::Session) = s.sock != nothing && close(s.sock)
 connect(s::Session) = isopen(s) ? s.sock : (s.sock = connect(s.uri))
 Base.getindex(s::Session, path) = run(SessionRequest(s, :GET, path, connect(s), Dates.now()))
 
@@ -108,7 +109,7 @@ SessionRequest(s::Session, verb::Symbol, uri::URI, sock, now) = begin
     c.hostonly ? uri.host == c.domain : endswith(uri.host, c.domain)
   end
   meta = Header("cookie"=> join(("$(c.name)=$(c.value)" for c in cookies), "; "))
-  SessionRequest{verb}(s, Request{verb}(uri, sock, meta))
+  SessionRequest{verb}(s, Request{verb}(uri=uri, sock=sock, meta=meta))
 end
 
 isexpired(c::Cookie, now::Dates.DateTime=Dates.now()) = c.expires != nothing && c.expires <= now

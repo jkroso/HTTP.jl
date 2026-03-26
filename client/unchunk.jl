@@ -1,11 +1,11 @@
 @use "github.com/jkroso/Buffer.jl" Buffer AbstractBuffer ["ReadBuffer" AbstractReadBuffer pull]
-@use "github.com/jkroso/Prospects.jl" @mutable
+@use "github.com/jkroso/Prospects.jl" @def
 @use "github.com/jkroso/Promises.jl" Future
 @use "../Header.jl" Header parse_header
 
 const CRLF = b"\r\n"
 
-@mutable struct Unchunker <: AbstractReadBuffer
+@def mutable struct Unchunker <: AbstractReadBuffer
   trailers::Future{Header}=Future{Header}()
   open::Bool=true
   nextchunk::Int=0

@@ -1,6 +1,6 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
 @use "github.com/jkroso/Buffer.jl" Buffer ["ReadBuffer.jl" ReadBuffer]
-@use "github.com/jkroso/Prospects.jl" assoc @mutable
+@use "github.com/jkroso/Prospects.jl" assoc @def
 @use CodecZlib: transcode, GzipDecompressor
 @use Sockets: connect, TCPSocket
 @use "../status.jl" messages
@@ -33,7 +33,7 @@ connect(uri::URI{:https}) = begin
   ReadBuffer(sock)
 end
 
-@mutable struct Request{verb} <: IO
+@def mutable struct Request{verb} <: IO
   uri::URI
   sock::IO
   meta::Header=Header()
@@ -97,7 +97,7 @@ Base.close(req::Request) = begin
   parse_response(req.sock)
 end
 
-@mutable struct Response <: IO
+@def mutable struct Response <: IO
   status::Int16
   meta::Header
   data::IO
