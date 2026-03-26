@@ -3,10 +3,10 @@
 using Test
 @use "github.com/jkroso/JSON.jl/write.jl"
 @use "github.com/jkroso/JSON.jl/read.jl"
-@use "./unchunk.jl" Unchunker
-@use "../Header.jl" Header
-@use "." GET POST PUT DELETE Response send
-@use "./Session.jl" Session
+@use "../unchunk.jl" Unchunker
+@use "../../Header.jl" Header
+@use ".." GET POST PUT DELETE Response send
+@use "../Session.jl" Session
 
 @testset "status codes" begin
   @test GET(":8000/status/200").status == 200

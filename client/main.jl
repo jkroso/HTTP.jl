@@ -188,17 +188,15 @@ for f in [:GET, :POST, :PUT, :DELETE]
     $f(uri::AbstractString; kwargs...) = $f(parseURI(uri); kwargs...)
     $f(uri::URI; data=nothing, kwargs...) = begin
       req = Request{$(QuoteNode(f))}(uri=uri, sock=connect(uri); kwargs...)
-      isnothing(data) || return run(req, data)
-      $(f in (:GET, :DELETE) ? :(run(req)) : :(req))
+      if isnothing(data)
+        $(f in (:GET, :DELETE) ? :(data = "") : :(return req))
+      end
+      res = write_body(req, data)
+      res = handle_response(res, req, [req.uri], data)
+      close(req.sock)
+      res
     end
   end
-end
-
-Base.run(req::Request, data="") = begin
-  res = write_body(req, data)
-  res = handle_response(res, req, [req.uri], data)
-  close(req.sock)
-  res
 end
 
 "An opinionated wrapper which handles redirects and throws on 4xx and 5xx responses"

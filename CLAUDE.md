@@ -17,17 +17,26 @@ All imports use `@use` syntax, not `using`/`import`:
 
 ## Running Tests
 
-Client tests require httpbin running locally:
+The test framework is `Test` from Base (using `@testset`, `@test`, `@test_throws`).
+
+### HTTP client tests
+Requires httpbin running locally:
 ```bash
 docker run -p 8000:80 kennethreitz/httpbin
+julia -e 'using Kip; @use "github.com/jkroso/HTTP.jl/client/test/http"'
 ```
 
-Then run tests:
+### WebSocket client tests
+Requires the Autobahn fuzzing server:
 ```bash
-julia -e 'using Kip; @use "github.com/jkroso/HTTP.jl/client/test"'
+docker run -it --rm \
+  -v "$(pwd)/client/test/autobahn:/config" \
+  -v "$(pwd)/client/test/autobahn/reports:/reports" \
+  -p 9001:9001 \
+  crossbario/autobahn-testsuite \
+  wstest -m fuzzingserver -s /config/fuzzingserver.json
+julia -e 'using Kip; @use "github.com/jkroso/HTTP.jl/client/test/websocket"'
 ```
-
-The test framework is `Test` from Base (using `@testset`, `@test`, `@test_throws`).
 
 ## Architecture
 
@@ -41,8 +50,10 @@ The codebase has two independent halves — **client** and **server** — sharin
 - `main.jl` — Core client. Defines `Request{verb}` (IO-writable) and `Response` (IO-readable). Provides `GET`/`POST`/`PUT`/`DELETE` convenience functions. Handles redirects, keep-alive, chunked transfer encoding, gzip decompression, and HTTPS via MbedTLS.
 - `Session.jl` — Stateful session with cookie jar, persistent connections, and ORM-style API (`session["/path"]`). Imports heavily from `main.jl`.
 - `unchunk.jl` — `Unchunker` struct implementing `AbstractReadBuffer` for reading chunked transfer encoding. Stores trailers in a `Future{Header}`.
+- `websocket.jl` — WebSocket client. `WebSocket(url)` connects and upgrades; `send`/`receive` for messaging; handles framing, masking, fragmentation, ping/pong, close handshake, and UTF-8 validation.
 - `Logger.jl` — Debug IO wrapper that logs all reads/writes to separate streams.
-- `test.jl` — Integration tests against httpbin.
+- `test/http.jl` — HTTP integration tests against httpbin.
+- `test/websocket.jl` — WebSocket tests against the Autobahn fuzzing suite.
 
 ### Server (`server/`)
 - `main.jl` — `HTTPServer`, server-side `Request{method}` (parametric on HTTP verb), and `Response{T}`. The `serve(fn, port)` function accepts a callback and handles keep-alive, async connections, and error responses.
@@ -52,7 +63,7 @@ The codebase has two independent halves — **client** and **server** — sharin
 ### Key Patterns
 - Both client and server `Request`/`Response` types are parametric — `Request{:GET}`, `Response{T}` — enabling dispatch on HTTP method and body type.
 - Client `Request` and `Response` both subtype `IO`, allowing streaming reads/writes.
-- Client uses `write_body` for content-length bodies and chunked encoding via `Base.write` overloads on `Request`.
+- Client uses `write_body` for content-length bodies and chunked encoding via `send` on `Request`.
 - Server `Response` rendering (`Base.write(io, ::Response)`) auto-selects chunked vs content-length encoding based on body type.
 
 ## Dependencies
