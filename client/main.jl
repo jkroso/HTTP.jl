@@ -48,6 +48,7 @@ send(io::Request, mime::MIME, data) = begin
   bytes = sprint(show, mime, data)
   write(io.sock, "Content-Type: $mime\r\n")
   write(io.sock, "Content-Length: $(sizeof(bytes))\r\n\r\n", bytes)
+  flush(io.sock)
   parse_response(io.sock)
 end
 
@@ -88,12 +89,14 @@ write_body(req::Request, data) = begin
   req.headers_started || start_headers(req)
   write(req.sock, "Content-Length: $(sizeof(data))\r\n\r\n", data)
   req.headers_finished = true
+  flush(req.sock)
   parse_response(req.sock)
 end
 
 Base.close(req::Request) = begin
   req.headers_finished || start_body(req)
   write(req.sock, "0\r\n\r\n")
+  flush(req.sock)
   parse_response(req.sock)
 end
 
