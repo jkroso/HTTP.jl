@@ -25,3 +25,13 @@ pull(io::Unchunker) = begin
 end
 
 Base.eof(io::Unchunker) = io.nextchunk == 0 && bytesavailable(io) == 0
+
+Base.read(io::Unchunker) = begin
+  while io.nextchunk > 0
+    append!(io.data, pull(io))
+  end
+  len = length(io.data)
+  bytes = @view io.data[io.i+1:len]
+  io.i = len
+  bytes
+end
