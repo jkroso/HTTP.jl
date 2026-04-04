@@ -108,7 +108,7 @@ end
 
 Base.eof(io::Response) = eof(io.data)
 Base.isopen(io::Response) = isopen(io.data)
-Base.read(io::Response) = read(io.data)
+Base.read(io::Response) = Vector{UInt8}(read(io.data))
 Base.read(io::Response, ::Type{UInt8}) = read(io.data, UInt8)
 Base.read(io::Response, n::Integer) = read(io.data, n)
 Base.bytesavailable(io::Response) = bytesavailable(io.data)

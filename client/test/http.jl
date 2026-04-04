@@ -118,6 +118,10 @@ end
   @test length(read(res)) == 5
 end
 
+@testset "read String" begin
+  @test read(GET(":8000/range/26"), String) == "abcdefghijklmnopqrstuvwxyz"
+end
+
 @testset "range" begin
   body = String(read(GET(":8000/range/26")))
   @test body == "abcdefghijklmnopqrstuvwxyz"
