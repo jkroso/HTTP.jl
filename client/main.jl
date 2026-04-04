@@ -12,7 +12,11 @@
 const default_uri = URI("http://localhost/")
 const CRLF = b"\r\n"
 
-connect(uri::URI{:http}) = connect(uri.host, uri.port)
+connect(uri::URI{:http}) = try
+  connect(uri.host, uri.port)
+catch e
+  uri.host == "localhost" ? connect("127.0.0.1", uri.port) : rethrow()
+end
 
 connect(uri::URI{:https}) = begin
   conf = MbedTLS.SSLConfig()
