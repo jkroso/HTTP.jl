@@ -34,7 +34,7 @@ connect(uri::URI{:https}) = begin
   MbedTLS.set_bio!(sock, connect(uri.host, uri.port))
   MbedTLS.hostname!(sock, uri.host)
   MbedTLS.handshake(sock)
-  ReadBuffer(sock)
+  ReadBuffer(io=sock)
 end
 
 @def mutable struct Request{verb} <: IO

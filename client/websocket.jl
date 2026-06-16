@@ -54,7 +54,7 @@ ws_connect(uri::URI) = begin
     MbedTLS.set_bio!(ctx, connect(uri.host, uri.port))
     MbedTLS.hostname!(ctx, uri.host)
     MbedTLS.handshake(ctx)
-    ReadBuffer(ctx)
+    ReadBuffer(io=ctx)
   else
     connect(uri.host, uri.port)
   end
