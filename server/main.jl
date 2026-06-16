@@ -134,9 +134,11 @@ Response(s::Integer, m::Dict) = Response(s, m, "")
 Response(m::Dict, data::Any) = Response(200, m, data)
 Response(s::Integer, data::Any) = Response(s, Headers(), data)
 Response(typ::AbstractString, data::Any) = Response(MIME(typ), data)
-Response(mime::MIME, data::Any) = begin
+Response(mime::MIME, data::Any) = Response(200, mime, data)
+Response(s::Integer, typ::AbstractString, data::Any) = Response(s, MIME(typ), data)
+Response(s::Integer, mime::MIME, data::Any) = begin
   body = applicable(show, stdout, mime, data) ? sprint(show, mime, data) : data
-  Response(200, Dict("Content-Type"=>string(mime)), body)
+  Response(s, Dict("Content-Type"=>string(mime)), body)
 end
 
 const PROTOCOL = b"HTTP/1.1 "
