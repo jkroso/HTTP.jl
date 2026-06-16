@@ -6,6 +6,11 @@ end
 
 Header(pairs::Pair...) = Header(reduce(append, pairs, init=Base.ImmutableDict{String,String}()))
 
+# Let a `meta`-typed field accept bare pairs so call sites can write
+# `POST(uri, meta="authorization" => "Bearer …")` without wrapping in `Header(…)`.
+Base.convert(::Type{Header}, p::Pair) = Header(p)
+Base.convert(::Type{Header}, ps::AbstractVector{<:Pair}) = Header(ps...)
+
 Base.iterate(h::Header) = iterate(h.dict)
 Base.iterate(h::Header, state) = iterate(h.dict, state)
 Base.length(h::Header) = length(h.dict)
