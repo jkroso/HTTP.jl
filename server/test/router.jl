@@ -24,6 +24,12 @@ xhandler(::Request{:POST}) = Response(200, "ok")
 const dhandler = @route "/dping"             # one-arg form → default router
 dhandler(::Request{:GET}) = Response(200, "dpong")
 
+const qhandler = @route app "/q/:id"
+qhandler(req::Request{:GET}, p; wait="25") = Response(200, p["id"] * ":" * wait)
+
+const slurphandler = @route app "/slurp"
+slurphandler(req::Request{:GET}; kwargs...) = Response(200, join(("$k=$v" for (k, v) in kwargs), ","))
+
 @testset "Router" begin
   @testset "path matching" begin
     @test matchpath(compile("/api/ping"), segments("/api/ping")) == Dict()
@@ -52,5 +58,19 @@ dhandler(::Request{:GET}) = Response(200, "dpong")
     @test custom(req("GET /missing")).data == "nf"
     @test custom(req("GET /x")).data == "na"           # path exists, wrong verb
     @test default_router()(req("GET /dping")).data == "dpong"
+  end
+
+  @testset "query params as kwargs" begin
+    # a declared kwarg receives the query value
+    @test app(req("GET /q/42?wait=5")).data == "42:5"
+    # default applies when the query key is absent
+    @test app(req("GET /q/42")).data == "42:25"
+    # an undeclared query key is dropped (no MethodError)
+    @test app(req("GET /q/42?wait=5&junk=1")).data == "42:5"
+    # a `kwargs...` handler receives every query key
+    @test occursin("a=1", app(req("GET /slurp?a=1&b=2")).data)
+    @test occursin("b=2", app(req("GET /slurp?a=1&b=2")).data)
+    # a handler that declares no kwargs is still called cleanly with a query present
+    @test app(req("GET /users/42?x=1")).data == "user 42"
   end
 end

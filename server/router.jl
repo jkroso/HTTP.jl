@@ -55,9 +55,12 @@ users(::Request{:DELETE})         = Response(204)
 serve(router, 8080)
 ```
 
-A handler method may take `(req, params)` or just `(req)`. A path with no method
-for the request's verb yields 405; an unmatched path yields 404 — both
-overridable via `Router(notfound=…, notallowed=…)`.
+A handler method may take `(req, params)` or just `(req)`. Query-string
+parameters are forwarded as keyword arguments, narrowed to the kwargs the handler
+declares — e.g. `users(req, params; page="1")` receives `page="3"` for
+`/users/42?page=3`; undeclared query keys are dropped (add `kwargs...` to receive
+them all). A path with no method for the request's verb yields 405; an unmatched
+path yields 404 — both overridable via `Router(notfound=…, notallowed=…)`.
 """
 mutable struct Router
   routes::Vector{Pair{Pattern,Any}}
@@ -72,6 +75,17 @@ Router(; notfound=default_404, notallowed=default_405) = Router(Pair{Pattern,Any
 "Bind handler function `fn` to `path` on the router. Usually written via `@route`."
 register!(r::Router, path::AbstractString, fn) = (push!(r.routes, compile(path) => fn); fn)
 
+# Query params (req.uri.query, a NamedTuple from URI.jl) forwarded to a handler as
+# keyword arguments, narrowed to the kwargs the chosen method declares — or all of
+# them if it has a `kwargs...` slurp. An empty query is a no-op, so handlers that
+# read no query params are called exactly as before.
+query_kwargs(m::Method, query::NamedTuple) = begin
+  isempty(query) && return query
+  decl = Base.kwarg_decl(m)                       # e.g. [:wait]; a slurp shows as Symbol("kwargs...")
+  any(s -> endswith(String(s), "..."), decl) && return query
+  NamedTuple{Tuple(k for k in keys(query) if k in decl)}(query)
+end
+
 (r::Router)(req::Request) = begin
   segs = segments(req.uri.path)
   matched = false
@@ -79,8 +93,11 @@ register!(r::Router, path::AbstractString, fn) = (push!(r.routes, compile(path) 
     params = matchpath(pat, segs)
     params === nothing && continue
     matched = true
-    hasmethod(fn, Tuple{typeof(req), typeof(params)}) && return fn(req, params)
-    hasmethod(fn, Tuple{typeof(req)}) && return fn(req)
+    if hasmethod(fn, Tuple{typeof(req), typeof(params)})
+      return fn(req, params; query_kwargs(which(fn, Tuple{typeof(req), typeof(params)}), req.uri.query)...)
+    elseif hasmethod(fn, Tuple{typeof(req)})
+      return fn(req; query_kwargs(which(fn, Tuple{typeof(req)}), req.uri.query)...)
+    end
   end
   matched ? r.notallowed(req) : r.notfound(req)
 end
