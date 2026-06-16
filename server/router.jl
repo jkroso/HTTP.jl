@@ -100,8 +100,12 @@ const ping = @route "/ping"
 ping(::Request{:GET}) = Response("pong")
 ```
 """
+# Name the handler function after its path (so stack traces / `methods` read
+# `var"/api/users"(::Request{:GET})`), falling back to a gensym for dynamic paths.
+routename(path) = path isa AbstractString ? Symbol(path) : gensym(:route)
+
 macro route(path)
-  f = gensym(:route)
+  f = routename(path)
   quote
     function $(esc(f)) end
     register!(default_router(), $(esc(path)), $(esc(f)))
@@ -109,7 +113,7 @@ macro route(path)
   end
 end
 macro route(router, path)
-  f = gensym(:route)
+  f = routename(path)
   quote
     function $(esc(f)) end
     register!($(esc(router)), $(esc(path)), $(esc(f)))

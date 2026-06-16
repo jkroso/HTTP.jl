@@ -39,6 +39,7 @@ dhandler(::Request{:GET}) = Response(200, "dpong")
   end
 
   @testset "@route dispatch" begin
+    @test nameof(pinghandler) == Symbol("/ping")   # named after its path
     @test app(req("GET /ping")).data == "pong"
     @test app(req("POST /signup")).data == "ok"
     @test app(req("OPTIONS /signup")).status == 204   # same path, different verb
