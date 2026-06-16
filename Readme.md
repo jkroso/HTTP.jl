@@ -19,26 +19,35 @@ wait(server)
 
 ## Routing
 
-For more than a couple of endpoints use a `Router` (itself a handler) instead of
-branching by hand:
+A `Router` is itself a handler, so you `serve` it directly. Each path is bound to
+a handler *function* whose methods dispatch on the request verb — so the HTTP
+method is just Julia multiple dispatch on `Request{:GET}`, `Request{:POST}`, …:
 
 ```julia
-@use "github.com/jkroso/HTTP.jl/server" serve Response
-@use "github.com/jkroso/HTTP.jl/server/router" Router register!
+@use "github.com/jkroso/HTTP.jl/server" serve Request Response
+@use "github.com/jkroso/HTTP.jl/server/router" Router @route
 
-router = Router()
-register!(router, "GET", "/ping", req -> Response("pong"))
-register!(router, "GET", "/users/:id") do req, params
-  Response("user " * params["id"])
-end
+const router = Router()
+
+const ping = @route router "/ping"
+ping(::Request{:GET}) = Response("pong")
+
+const signup = @route router "/signup"        # one path, two verbs
+signup(::Request{:POST})    = Response("thanks")
+signup(::Request{:OPTIONS}) = Response(204)
+
+const users = @route router "/users/:id"
+users(req::Request{:GET}, params) = Response("user " * params["id"])
 
 serve(router, 3000)
 ```
 
+`@route` mints a fresh handler function, binds it to the path, and returns it;
+you add verb methods to it. A method may take `(req, params)` or just `(req)`.
 Paths support `:name`/`{name}` params, `*` (one segment) and `**` (the rest). A
-handler is called as `handler(req, params)` when it takes two arguments, else
-`handler(req)`. Unmatched paths return 404; a path that exists only under another
-method returns 405 — override both with `Router(notfound=…, notallowed=…)`.
+path with no method for the request's verb returns 405; an unmatched path returns
+404 — override both with `Router(notfound=…, notallowed=…)`. `@route "/path"`
+(one argument) registers into a shared default router.
 
 ## HTTP Client
 

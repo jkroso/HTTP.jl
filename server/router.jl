@@ -41,57 +41,78 @@ matchpath(pattern::Pattern, segs) = begin
   i == length(segs) + 1 ? params : nothing
 end
 
-struct Route
-  method::String
-  pattern::Pattern
-  handler::Any
-end
-
 """
-A request router: maps `(method, path)` to a handler. The router is itself a
-handler, so you pass it straight to `serve`:
+A request router. Each path maps to a handler *function* whose methods dispatch
+on the request verb (`Request{:GET}`, `Request{:POST}`, …). Define routes with
+the [`@route`](@ref) macro and `serve` the router directly — it is itself a
+handler:
 
 ```julia
-router = Router()
-register!(router, "GET", "/ping", req -> Response("pong"))
-register!(router, "GET", "/users/:id") do req, params
-  Response("user " * params["id"])
-end
+const router = Router()
+const users = @route router "/users/:id"
+users(req::Request{:GET}, params) = Response("user " * params["id"])
+users(::Request{:DELETE})         = Response(204)
 serve(router, 8080)
 ```
 
-Paths support `:name`/`{name}` params, `*` (one segment) and `**` (the rest,
-captured as `"rest"`). A matched handler is called as `handler(req, params)`
-when it accepts two arguments, else `handler(req)`. An unmatched path hits
-`notfound` (404); a path that exists only under another method hits
-`notallowed` (405). Both are overridable: `Router(notfound=…, notallowed=…)`.
+A handler method may take `(req, params)` or just `(req)`. A path with no method
+for the request's verb yields 405; an unmatched path yields 404 — both
+overridable via `Router(notfound=…, notallowed=…)`.
 """
 mutable struct Router
-  routes::Vector{Route}
+  routes::Vector{Pair{Pattern,Any}}
   notfound::Any
   notallowed::Any
 end
 
 default_404(req) = Response(404, "Not Found")
 default_405(req) = Response(405, "Method Not Allowed")
-Router(; notfound=default_404, notallowed=default_405) = Router(Route[], notfound, notallowed)
+Router(; notfound=default_404, notallowed=default_405) = Router(Pair{Pattern,Any}[], notfound, notallowed)
 
-"Register `handler` for `method` + `path`. Also usable as a `do` block."
-register!(r::Router, method::AbstractString, path::AbstractString, handler) =
-  (push!(r.routes, Route(uppercase(method), compile(path), handler)); r)
-register!(handler, r::Router, method::AbstractString, path::AbstractString) =
-  register!(r, method, path, handler)
+"Bind handler function `fn` to `path` on the router. Usually written via `@route`."
+register!(r::Router, path::AbstractString, fn) = (push!(r.routes, compile(path) => fn); fn)
 
 (r::Router)(req::Request) = begin
   segs = segments(req.uri.path)
-  method = verb(req)
-  pathmatched = false
-  for rt in r.routes
-    params = matchpath(rt.pattern, segs)
+  matched = false
+  for (pat, fn) in r.routes
+    params = matchpath(pat, segs)
     params === nothing && continue
-    pathmatched = true
-    rt.method == method || continue
-    return applicable(rt.handler, req, params) ? rt.handler(req, params) : rt.handler(req)
+    matched = true
+    hasmethod(fn, Tuple{typeof(req), typeof(params)}) && return fn(req, params)
+    hasmethod(fn, Tuple{typeof(req)}) && return fn(req)
   end
-  pathmatched ? r.notallowed(req) : r.notfound(req)
+  matched ? r.notallowed(req) : r.notfound(req)
+end
+
+# A shared default router for the one-argument `@route "/path"` form.
+const DEFAULT = Router()
+default_router() = DEFAULT
+
+"""
+    @route [router] path
+
+Mint a fresh handler function, bind it to `path` on `router` (default: the shared
+[`default_router`](@ref)), and return it. Give the returned function verb methods:
+
+```julia
+const ping = @route "/ping"
+ping(::Request{:GET}) = Response("pong")
+```
+"""
+macro route(path)
+  f = gensym(:route)
+  quote
+    function $(esc(f)) end
+    register!(default_router(), $(esc(path)), $(esc(f)))
+    $(esc(f))
+  end
+end
+macro route(router, path)
+  f = gensym(:route)
+  quote
+    function $(esc(f)) end
+    register!($(esc(router)), $(esc(path)), $(esc(f)))
+    $(esc(f))
+  end
 end
