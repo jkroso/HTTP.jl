@@ -1,6 +1,5 @@
-@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse
+@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse connect
 @use "github.com/jkroso/Prospects.jl" assoc assoc_in @struct @mutable
-@use Sockets: connect, TCPSocket
 @use "../Header.jl" Header
 @use Dates
 

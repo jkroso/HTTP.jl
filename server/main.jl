@@ -1,9 +1,9 @@
-@use Sockets: TCPServer, listen, accept, TCPSocket, localhost, IPAddr, IPv4
+@use Reseau: TCP
 @use "github.com/jkroso/URI.jl" URI
 @use "../status" messages
 
 struct HTTPServer <: Base.IOServer
-  tcp::TCPServer
+  tcp::TCP.Listener
   task::Task
 end
 
@@ -24,14 +24,12 @@ println("server listening on http://localhost:3000")
 wait(server)
 ```
 """
-serve(fn::Any, port::Integer, addr::IPAddr=localhost) = serve(fn, listen(addr, port))
-serve(fn::Any, port::Integer, addr::AbstractString) = serve(fn, port, parse(IPAddr, addr))
-serve(fn::Any, port::Integer, addr::Integer) = serve(fn, port, IPv4(addr))
-serve(fn::Any, server::TCPServer) = HTTPServer(server, @async handle_requests(fn, server))
+serve(fn::Any, port::Integer, addr::AbstractString="127.0.0.1") = serve(fn, TCP.listen("tcp", "$addr:$port"))
+serve(fn::Any, server::TCP.Listener) = HTTPServer(server, @async handle_requests(fn, server))
 
-handle_requests(fn::Any, server::TCPServer) =
+handle_requests(fn::Any, server::TCP.Listener) =
   while isopen(server)
-    sock = accept(server)
+    sock = TCP.accept(server)
     @async begin
       keepalive = true
       while keepalive && request_received(sock)
@@ -52,27 +50,29 @@ handle_requests(fn::Any, server::TCPServer) =
     end
   end
 
-request_received(io::TCPSocket) = begin
-  try
-    Base.wait_readnb(io, 1)
-  catch e
-    isECONNRESET(e) || rethrow(e)
-  end
-  isopen(io)
+# Block until the next request's first byte arrives (keep-alive) or the peer
+# closes. Reseau signals a reset by throwing rather than reporting EOF.
+request_received(io::TCP.Conn) = try
+  !eof(io)
+catch e
+  isECONNRESET(e) || rethrow(e)
+  false
 end
 
 # EPIPE just means we tried to write to a closed stream
 isEPIPE(e::Base.IOError) = e.code == -Libc.EPIPE
+isEPIPE(e::Base.SystemError) = e.errnum == Libc.EPIPE
 isEPIPE(e::Any) = false
 # ECONNRESET just means the client closed the stream
 isECONNRESET(e::Any) = false
 isECONNRESET(e::Base.IOError) = e.code == -Libc.ECONNRESET
+isECONNRESET(e::Base.SystemError) = e.errnum == Libc.ECONNRESET
 
 """
 serve without the task wrapper so that stack traces can be preserved
 """
-debug(fn::Any, port::Integer) = debug(fn, listen(port))
-debug(fn::Any, server::TCPServer) = handle_requests(fn, server)
+debug(fn::Any, port::Integer) = debug(fn, TCP.listen("tcp", "127.0.0.1:$port"))
+debug(fn::Any, server::TCP.Listener) = handle_requests(fn, server)
 
 const Headers = Dict{String, String}
 

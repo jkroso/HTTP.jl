@@ -1,41 +1,23 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode ["FSPath.jl" @fs_str FSPath]
-@use "github.com/jkroso/Buffer.jl" Buffer ["ReadBuffer.jl" ReadBuffer]
+@use "github.com/jkroso/Buffer.jl" Buffer
 @use "github.com/jkroso/Prospects.jl" assoc @def
 @use CodecZlib: transcode, GzipDecompressor, ZlibDecompressor
-@use Sockets: connect, TCPSocket
 @use "../status.jl" messages
 @use "../Header.jl" Header parse_header
 @use "./unchunk.jl" Unchunker
-@use MbedTLS
+@use Reseau: TLS, TCP
 @use Dates
 
 const default_uri = URI("http://localhost/")
 const CRLF = b"\r\n"
 
 connect(uri::URI{:http}) = try
-  connect(uri.host, uri.port)
+  TCP.connect("$(uri.host):$(uri.port)")
 catch e
-  uri.host == "localhost" ? connect("127.0.0.1", uri.port) : rethrow()
+  uri.host == "localhost" ? TCP.connect("127.0.0.1:$(uri.port)") : rethrow()
 end
 
-connect(uri::URI{:https}) = begin
-  conf = MbedTLS.SSLConfig()
-  MbedTLS.config_defaults!(conf)
-  rng = MbedTLS.CtrDrbg()
-  MbedTLS.seed!(rng, MbedTLS.Entropy())
-  MbedTLS.rng!(conf, rng)
-  MbedTLS.authmode!(conf, MbedTLS.MBEDTLS_SSL_VERIFY_REQUIRED)
-  MbedTLS.dbg!(conf, function(level, filename, number, msg)
-    warn("MbedTLS emitted debug info: $msg in $filename:$number")
-  end)
-  MbedTLS.ca_chain!(conf)
-  sock = MbedTLS.SSLContext()
-  MbedTLS.setup!(sock, conf)
-  MbedTLS.set_bio!(sock, connect(uri.host, uri.port))
-  MbedTLS.hostname!(sock, uri.host)
-  MbedTLS.handshake(sock)
-  ReadBuffer(io=sock)
-end
+connect(uri::URI{:https}) = TLS.connect("$(uri.host):$(uri.port)")
 
 @def mutable struct Request{verb} <: IO
   uri::URI

@@ -1,8 +1,6 @@
 @use "github.com/jkroso/URI.jl" URI encode_query encode
-@use "github.com/jkroso/Buffer.jl" ["ReadBuffer.jl" ReadBuffer]
 @use "github.com/jkroso/Prospects.jl" assoc @def
-@use Sockets: connect
-@use MbedTLS
+@use Reseau: TLS, TCP
 @use SHA: sha1
 @use Base64: base64encode
 
@@ -40,25 +38,12 @@ parse_ws_uri(str::AbstractString) = begin
   assoc(uri, :port, uri.protocol in (:ws, :http) ? 80 : 443)
 end
 
-ws_connect(uri::URI) = begin
+ws_connect(uri::URI) =
   if uri.protocol in (:wss, :https)
-    conf = MbedTLS.SSLConfig()
-    MbedTLS.config_defaults!(conf)
-    rng = MbedTLS.CtrDrbg()
-    MbedTLS.seed!(rng, MbedTLS.Entropy())
-    MbedTLS.rng!(conf, rng)
-    MbedTLS.authmode!(conf, MbedTLS.MBEDTLS_SSL_VERIFY_REQUIRED)
-    MbedTLS.ca_chain!(conf)
-    ctx = MbedTLS.SSLContext()
-    MbedTLS.setup!(ctx, conf)
-    MbedTLS.set_bio!(ctx, connect(uri.host, uri.port))
-    MbedTLS.hostname!(ctx, uri.host)
-    MbedTLS.handshake(ctx)
-    ReadBuffer(io=ctx)
+    TLS.connect("$(uri.host):$(uri.port)")
   else
-    connect(uri.host, uri.port)
+    TCP.connect("$(uri.host):$(uri.port)")
   end
-end
 
 upgrade(uri::URI, sock::IO) = begin
   key = base64encode(rand(UInt8, 16))
