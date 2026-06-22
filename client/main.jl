@@ -100,6 +100,19 @@ Base.read(io::Response, n::Integer) = read(io.data, n)
 Base.bytesavailable(io::Response) = bytesavailable(io.data)
 Base.readavailable(io::Response) = readavailable(io.data)
 
+"""
+Pull a still-streaming chunked body fully into memory so the response stays
+readable once its socket is closed or reused for another request. A no-op for
+bodies that are already buffered (e.g. content-length responses).
+"""
+buffer!(res::Response) = begin
+  res.data isa Unchunker || return res
+  buf = Buffer(copy(read(res.data)))
+  close(buf)
+  res.data = buf
+  res
+end
+
 function Base.show(io::IO, r::Response)
   println(io, "HTTP/1.1 ", r.status, ' ', messages[r.status])
   for (header, value) in r.meta
@@ -182,6 +195,7 @@ for f in [:GET, :POST, :PUT, :DELETE]
       end
       res = write_body(req, data)
       res = handle_response(res, req, [req.uri], data)
+      buffer!(res)
       close(req.sock)
       res
     end

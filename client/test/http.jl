@@ -106,6 +106,8 @@ end
   res = GET(":8000/stream/3")
   @test res.status == 200
   @test occursin("application/json", res.meta["content-type"])
+  # chunked body must stay readable after GET closes the socket
+  @test occursin("\"url\"", String(read(res)))
 end
 
 @testset "delay" begin
@@ -242,6 +244,20 @@ end
   parse(s["/cookies/set/foo/bar"])
   data = parse(s["/cookies"])
   @test data["cookies"]["foo"] == "bar"
+  close(s)
+end
+
+@testset "session: unread responses" begin
+  s = Session(":8000")
+  sock = s.sock
+  r1 = s["/stream/2"]  # chunked, left unread
+  r2 = s["/stream/4"]  # sent while r1 is still unread
+  r3 = s["/get"]
+  @test (r1.status, r2.status, r3.status) == (200, 200, 200)
+  @test s.sock === sock          # one keep-alive connection reused throughout
+  @test length(read(r2)) > 0     # earlier responses stay readable, even out of order
+  @test length(read(r1)) > 0
+  @test haskey(parse(r3), "url")
   close(s)
 end
 

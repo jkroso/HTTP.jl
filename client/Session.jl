@@ -1,4 +1,4 @@
-@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse connect
+@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse connect buffer!
 @use "github.com/jkroso/Prospects.jl" assoc assoc_in @struct @mutable
 @use "../Header.jl" Header
 @use Dates
@@ -42,6 +42,7 @@ end
   cookies::Dict{String,Cookie}=Dict{String,Cookie}()
   sock::Union{IO,Nothing}=nothing
   lock::ReentrantLock=ReentrantLock()
+  pending::Union{Response,Nothing}=nothing
 end
 
 Session(uri::URI) = Session(uri=uri, sock=connect(uri))
@@ -58,8 +59,12 @@ Base.getindex(s::Session, path) = run(SessionRequest(s, :GET, path, connect(s), 
   max_redirects::Int=5
 end
 
+# Before sending on the reused socket, pull any unread body of the previous
+# response into memory so it stays readable and the stream is clean for the
+# next request. Record this response as the new pending one once it lands.
 Base.run(sr::SessionRequest{:GET}) = begin
-  try
+  drain!(sr.session)
+  res = try
     run_request(sr, Dates.now(), [sr.request.uri])
   catch e
     because_closed(e) || rethrow(e)
@@ -67,6 +72,16 @@ Base.run(sr::SessionRequest{:GET}) = begin
     sr.session.sock = sock
     run(SessionRequest{:GET}(sr.session, assoc(sr.request, :sock, sock)))
   end
+  sr.session.pending = res
+end
+
+drain!(s::Session) = begin
+  s.pending === nothing && return
+  res = s.pending
+  s.pending = nothing
+  # If the keep-alive socket already died, that body is unrecoverable — drop it
+  # rather than letting it break the next request (which uses a fresh socket).
+  try buffer!(res) catch end
 end
 
 because_closed(e::Base.IOError) = e.code == -32
