@@ -1,4 +1,4 @@
-@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse connect buffer!
+@use "." URI Request Response parseURI GET PUT POST DELETE write_body readbody interpret_redirect canreuse connect buffer! send
 @use "github.com/jkroso/Prospects.jl" assoc assoc_in @struct @mutable
 @use "../Header.jl" Header
 @use Dates
@@ -53,6 +53,16 @@ Base.close(s::Session) = s.sock != nothing && close(s.sock)
 connect(s::Session) = isopen(s) ? s.sock : (s.sock = connect(s.uri))
 Base.getindex(s::Session, path) = run(SessionRequest(s, :GET, path, connect(s), Dates.now()))
 
+"Drop a dead keep-alive socket and open a fresh one to the session origin."
+reconnect!(s::Session) = begin
+  try
+    s.sock !== nothing && close(s.sock)
+  catch
+  end
+  s.pending = nothing
+  s.sock = connect(s.uri)
+end
+
 @struct struct SessionRequest{verb} <: IO
   session::Session
   request::Request{verb}
@@ -62,17 +72,53 @@ end
 # Before sending on the reused socket, pull any unread body of the previous
 # response into memory so it stays readable and the stream is clean for the
 # next request. Record this response as the new pending one once it lands.
+# Retries on peer-closed keep-alive (TLS reset / ECONNRESET / EPIPE).
 Base.run(sr::SessionRequest{:GET}) = begin
   drain!(sr.session)
-  res = try
-    run_request(sr, Dates.now(), [sr.request.uri])
-  catch e
-    because_closed(e) || rethrow(e)
-    sock = connect(sr.session.uri)
-    sr.session.sock = sock
-    run(SessionRequest{:GET}(sr.session, assoc(sr.request, :sock, sock)))
+  attempt = 0
+  while true
+    attempt += 1
+    try
+      res = run_request(sr, Dates.now(), [sr.request.uri])
+      sr.session.pending = res
+      return res
+    catch e
+      because_closed(e) || rethrow(e)
+      attempt >= 3 && rethrow(e)
+      reconnect!(sr.session)
+      sr = SessionRequest{:GET}(sr.session, assoc(sr.request, :sock, sr.session.sock))
+      sleep(min(0.25 * 2^(attempt - 1), 2.0))
+    end
   end
-  sr.session.pending = res
+end
+
+"""
+POST a body on a keep-alive `Session`, reconnecting when the peer dropped the
+socket under us (idle TLS reset, ECONNRESET, EPIPE). Used by LLM providers and
+any other long-lived Session client.
+
+`attempts` defaults to 3 (1 try + 2 reconnects). Exponential backoff between
+retries: 0.25s, 0.5s (capped at 2s).
+"""
+function send(s::Session, uri::URI, mime, data; meta=Header(), attempts::Int=3)
+  drain!(s)
+  attempt = 0
+  while true
+    attempt += 1
+    try
+      if attempt > 1
+        reconnect!(s)
+        sleep(min(0.25 * 2^(attempt - 2), 2.0))
+      end
+      req = Request{:POST}(uri=uri, sock=connect(s), meta=meta)
+      res = send(req, mime, data)
+      s.pending = res
+      return res
+    catch e
+      because_closed(e) || rethrow(e)
+      attempt >= attempts && rethrow(e)
+    end
+  end
 end
 
 drain!(s::Session) = begin
@@ -84,9 +130,28 @@ drain!(s::Session) = begin
   try buffer!(res) catch end
 end
 
-because_closed(e::Base.IOError) = e.code == -32
+# ── Transport-dead classification ─────────────────────────────────────
+# Keep-alive peers (esp. cloud LLM APIs) silently drop idle TLS sockets.
+# Reseau surfaces that as TLSError("peek"|"read"|"write", …) wrapping
+# SystemError(ECONNRESET); raw sockets throw IOError/SystemError. Also
+# empty-line BoundsError from parse_status when the peer closed mid-request.
+
+const _CLOSED_ERRNOS = (Libc.EPIPE, Libc.ECONNRESET, Libc.ENOTCONN, Libc.ECONNABORTED)
+
+because_closed(e::Base.IOError) = abs(e.code) in _CLOSED_ERRNOS || e.code in (-32,)  # -32 legacy EPIPE
+because_closed(e::Base.SystemError) = e.errnum in _CLOSED_ERRNOS
 because_closed(e::BoundsError) = e.i == 10:12
-because_closed(e) = false
+because_closed(::EOFError) = true
+function because_closed(e)
+  # Nested cause (Reseau TLSError, TaskFailedException, etc.)
+  if hasproperty(e, :cause)
+    c = getfield(e, :cause)
+    c isa Exception && because_closed(c) && return true
+  end
+  # Message fallback: "tls peek failed: unexpected TLS failure [SystemError: read: Connection reset by peer]"
+  msg = try sprint(showerror, e) catch; return false end
+  occursin(r"(?i)connection reset|broken pipe|connection is closed|not connected|tls (peek|read|write|handshake) failed", msg)
+end
 
 run_request((;session,request)::SessionRequest{:GET}, now, seen) = begin
   (;max_redirects, uri, sock, meta) = request
