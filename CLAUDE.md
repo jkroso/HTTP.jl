@@ -20,7 +20,17 @@ All imports use `@use` syntax, not `using`/`import`:
 The test framework is `Test` from Base (using `@testset`, `@test`, `@test_throws`).
 
 ### HTTP client tests
-Requires httpbin running locally:
+`client/test/local.jl` is self-contained: it starts the library's own server and
+raw TCP listeners in-process (timeouts, streaming, multipart, close-delimited
+bodies, header precedence, `HTTPError`), so it needs no docker or network:
+```bash
+julia -e 'using Kip; include("client/test/local.jl")'          # from the repo root
+julia -e 'using Kip; include("client/test/session_retry.jl")'
+```
+`include` rather than `@use`: Kip precompiles a `@use`d file, so a failing test
+file runs twice.
+
+The older integration suite needs httpbin running locally:
 ```bash
 docker run -p 8000:80 kennethreitz/httpbin
 julia -e 'using Kip; @use "github.com/jkroso/HTTP.jl/client/test/http"'
@@ -47,11 +57,16 @@ The codebase has two independent halves — **client** and **server** — sharin
 - `status.jl` — `Dict{UInt16,String}` mapping status codes to reason phrases.
 
 ### Client (`client/`)
-- `main.jl` — Core client. Defines `Request{verb}` (IO-writable) and `Response` (IO-readable). Provides `GET`/`POST`/`PUT`/`DELETE` convenience functions. Handles redirects, keep-alive, chunked transfer encoding, gzip decompression, and HTTPS via MbedTLS.
-- `Session.jl` — Stateful session with cookie jar, persistent connections, and ORM-style API (`session["/path"]`). Imports heavily from `main.jl`.
+- `main.jl` — Core client. Defines `Request{verb}` (IO-writable) and `Response` (IO-readable). Provides `GET`/`POST`/`PUT`/`DELETE` convenience functions (keywords `meta`, `data`, `query`, `connect_timeout`, `readtimeout`, `timeout`, `max_redirects`; a leading function argument streams the body). Handles redirects, keep-alive, chunked and close-delimited bodies, gzip/deflate decompression (other encodings pass through), and HTTPS via Reseau. Throws `HTTPError{status}` (body buffered) on 4xx/5xx; `send(req, …)` returns the Response instead. Also `escapeuri`.
+- `timeout.jl` — `Timeouts` (a request's budget), `TimedIO` (wraps a Reseau socket and re-arms its absolute deadlines before reads/writes so `readtimeout` is an idle limit) and `TimeoutError`. Connect timeouts go to Reseau's `timeout_ns`, which covers DNS, TCP and the TLS handshake. Without timeouts sockets aren't wrapped.
+- `body.jl` — `Body`, the lazy `AbstractReadBuffer` used for streamed Content-Length and close-delimited bodies.
+- `multipart.jl` — `Form` and `Multipart` for `multipart/form-data` uploads.
+- `Session.jl` — Stateful session with cookie jar, persistent connections, and ORM-style API (`session["/path"]`). Imports heavily from `main.jl`. Session-wide timeouts; timeouts are never retried and hang up the socket.
 - `unchunk.jl` — `Unchunker` struct implementing `AbstractReadBuffer` for reading chunked transfer encoding. Stores trailers in a `Future{Header}`.
 - `websocket.jl` — WebSocket client. `WebSocket(url)` connects and upgrades; `send`/`receive` for messaging; handles framing, masking, fragmentation, ping/pong, close handshake, and UTF-8 validation.
 - `Logger.jl` — Debug IO wrapper that logs all reads/writes to separate streams.
+- `test/local.jl` — self-contained client tests (in-process servers).
+- `test/session_retry.jl` — reconnect classification unit tests.
 - `test/http.jl` — HTTP integration tests against httpbin.
 - `test/websocket.jl` — WebSocket tests against the Autobahn fuzzing suite.
 
@@ -69,5 +84,5 @@ The codebase has two independent halves — **client** and **server** — sharin
 ## Dependencies
 
 Key external Kip packages: URI.jl, Buffer.jl, Prospects.jl (assoc/mutable helpers), Promises.jl (Future), JSON.jl, DOM.jl.
-Standard libraries: MbedTLS (TLS/SSL), CodecZlib (gzip), Sockets, Dates.
+Reseau.jl (TCP/TLS sockets, DNS, deadlines), CodecZlib (gzip), Dates.
 Server additionally uses Crayons for terminal colors.
