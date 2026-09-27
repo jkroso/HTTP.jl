@@ -92,7 +92,6 @@ try
   GET("api.example.com/thing/1")
 catch e
   e isa HTTPError{404} && return nothing   # or: e isa HTTPError && e.status == 404
-  e isa HTTPError{429} && sleep(parse(Int, e.meta["retry-after"]))
   rethrow()
 end
 ```
@@ -105,6 +104,24 @@ keys.
 
 `send(req, …)` doesn't throw: it returns the `Response` whatever the status, so
 check `res.status` there.
+
+### Retries
+
+A dropped or refused connection, a connect timeout, or a 408, 429, 502, 503 or
+504 is tried again, after a short backoff (~0.25s, then ~0.5s) or the server's
+`Retry-After` if it sends one. GET, PUT and DELETE get 2 retries by default;
+POST gets none, since sending it twice may do the thing twice. Set `retries` to
+change that:
+
+```julia
+GET(url; retries=0)          # fail fast
+POST(url; data, retries=3)   # you know this POST is safe to repeat
+```
+
+Not retried: a read timeout (the server is slow, not gone), a 4xx other than
+408/429, a body that can't be sent again (an `IO`), a `Retry-After` longer than
+10s (you get the error), and a streamed request once your function has the
+response. `timeout` covers every try and wait together.
 
 ### Timeouts
 

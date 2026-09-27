@@ -8,7 +8,7 @@
 @use "./body.jl" Body
 @use "./timeout.jl" Timeouts TimeoutError TimedIO timed connect_budget istimeout readall redact
 @use "./multipart.jl" Form Multipart content_type body => form_body
-@use Reseau: TLS, TCP
+@use Reseau: TLS, TCP, HostResolvers
 @use Dates
 
 const default_uri = URI("http://localhost/")
@@ -280,7 +280,11 @@ end
 
 closed(bytes::AbstractVector{UInt8}) = (b = Buffer(Vector{UInt8}(bytes)); close(b); b)
 
-parse_status(io::IO) = parse(Int, readline(io)[10:12])
+parse_status(io::IO) = begin
+  line = readline(io)
+  isempty(line) && throw(EOFError()) # closed before answering
+  parse(Int, line[10:12])
+end
 
 chunked(meta) = occursin("chunked", lowercase(get(meta, "transfer-encoding", "")))
 
@@ -336,47 +340,120 @@ request(verb::Symbol, uri::URI; connect_timeout::Real=0, readtimeout::Real=0, ti
   Request{verb}(; uri=uri, sock=sock, timeouts=t, query=query_string(query), kwargs...)
 end
 
+"""
+Statuses worth asking again: the server says it's busy, briefly down, or it
+timed out waiting for us.
+"""
+const RETRY_STATUS = (408, 429, 502, 503, 504)
+
+"The longest one retry waits, `Retry-After` included. A server wanting longer gets its error."
+const MAX_RETRY_WAIT = 10.0
+
+"Verbs that mean the same thing sent twice, so they're retried by default."
+idempotent(verb::Symbol) = verb in (:GET, :PUT, :DELETE)
+
+"Can `data` be sent again? A stream can't be rewound, nor a form holding one."
+replayable(data) = !(data isa IO)
+replayable(f::Form) = all(p -> replayable(p.second isa Multipart ? p.second.data : p.second), f.parts)
+
+"Could asking again fix `e`? A dropped or refused connection, a connect timeout, a busy server."
+retryable(e::HTTPError) = e.status in RETRY_STATUS
+retryable(e::TimeoutError) = e.phase == :connect
+retryable(::Union{EOFError,Base.IOError,HostResolvers.OpError}) = true
+retryable(e::TLS.TLSError) = !occursin("certificate", e.message) # a bad cert stays bad
+retryable(::Any) = false
+
+"Seconds to wait before retry `n`: the server's `Retry-After`, else backoff with jitter."
+retry_wait(e, n) = 0.25 * 2.0^(n - 1) * (0.5 + rand() / 2)
+retry_wait(e::HTTPError, n) = something(retry_after(e.meta), retry_wait(nothing, n))
+retry_after(meta) = begin
+  s = tryparse(Float64, strip(get(meta, "retry-after", "")))
+  s === nothing ? nothing : max(0.0, s)
+end
+
+"""
+Run `attempt(timeout)` up to `1 + retries` times while it fails `retryable`ly,
+waiting `retry_wait` between tries. `timeout` is the budget for all of them:
+each try gets what's left, and a wait that would overrun it isn't taken. Once
+`started()` a try isn't repeated (the caller has begun reading its body).
+"""
+function with_retries(attempt, retries::Integer, timeout::Real; started=() -> false)
+  t0 = time()
+  n = 0
+  while true
+    left = timeout > 0 ? max(timeout - (time() - t0), 0.001) : 0.0
+    try
+      return attempt(left)
+    catch e
+      n += 1
+      (n > retries || started() || !retryable(e)) && rethrow()
+      pause = retry_wait(e, n)
+      pause > MAX_RETRY_WAIT && rethrow()
+      timeout > 0 && time() - t0 + pause >= timeout && rethrow()
+      sleep(pause)
+    end
+  end
+end
+
 # Create convenience methods for the common HTTP verbs so you can simply write `GET("github.com")`
 for f in [:GET, :POST, :PUT, :DELETE]
+  v = QuoteNode(f)
+  n = idempotent(f) ? 2 : 0
   @eval begin
     $f(uri::AbstractString; kwargs...) = $f(parseURI(uri); kwargs...)
-    $f(uri::URI; data=nothing, kwargs...) = begin
-      req = request($(QuoteNode(f)), uri; kwargs...)
+    $f(uri::URI; data=nothing, retries::Integer=$n, timeout::Real=0, kwargs...) = begin
       if isnothing(data)
-        $(f in (:GET, :DELETE) ? :(data = "") : :(return req))
+        $(f in (:GET, :DELETE) ? :(data = "") : :(return request($v, uri; timeout, kwargs...)))
       end
-      sock = req.sock
-      try
-        res, last = follow(write_body(req, data), req, [req.uri], data)
-        sock = last.sock
-        buffer!(res)
-      finally
-        safeclose(sock)
-        sock === req.sock || safeclose(req.sock)
+      replayable(data) || (retries = 0)
+      with_retries(retries, timeout) do left
+        req = request($v, uri; timeout=left, kwargs...)
+        sock = req.sock
+        try
+          res, last = follow(write_body(req, data), req, [req.uri], data)
+          sock = last.sock
+          buffer!(res)
+        finally
+          safeclose(sock)
+          sock === req.sock || safeclose(req.sock)
+        end
       end
     end
     $f(fn::Function, uri::AbstractString; kwargs...) = $f(fn, parseURI(uri); kwargs...)
-    $f(fn::Function, uri::URI; data="", kwargs...) = begin
-      req = request($(QuoteNode(f)), uri; stream=true, kwargs...)
-      sock = req.sock
-      try
-        res, last = follow(write_body(req, data), req, [req.uri], data)
-        sock = last.sock
-        fn(res)
-      finally
-        safeclose(sock)
-        sock === req.sock || safeclose(req.sock)
+    $f(fn::Function, uri::URI; data="", retries::Integer=$n, timeout::Real=0, kwargs...) = begin
+      replayable(data) || (retries = 0)
+      called = false
+      with_retries(retries, timeout; started=() -> called) do left
+        req = request($v, uri; stream=true, timeout=left, kwargs...)
+        sock = req.sock
+        try
+          res, last = follow(write_body(req, data), req, [req.uri], data)
+          sock = last.sock
+          called = true
+          fn(res)
+        finally
+          safeclose(sock)
+          sock === req.sock || safeclose(req.sock)
+        end
       end
     end
   end
 end
 
 @doc """
-    GET(url; meta, query, data, connect_timeout, readtimeout, timeout, max_redirects)
+    GET(url; meta, query, data, connect_timeout, readtimeout, timeout, retries, max_redirects)
     GET(fn, url; ...)
 
 Make a request and return its `Response`, following redirects and throwing an
-`HTTPError` for 4xx/5xx. `POST`/`PUT` without `data` return the open `Request`
+`HTTPError` for 4xx/5xx.
+
+A dropped or refused connection, a connect timeout, or a 408/429/502/503/504 is
+retried `retries` times (default 2 for GET, PUT and DELETE; 0 for POST, which
+may not be safe to send twice), after a short backoff or the server's
+`Retry-After` (up to $(Int(MAX_RETRY_WAIT))s). `timeout` bounds every try and
+wait together. A read timeout isn't retried (the server is slow, not gone), nor
+a body that can't be re-sent (an IO), nor a streamed request once `fn` has the
+response. `POST`/`PUT` without `data` return the open `Request`
 for you to `send` a body on.
 
 Given a function, the body isn't buffered: `fn` gets the `Response` with its

@@ -8,7 +8,7 @@ using Test
 @use CodecZlib: transcode, GzipCompressor
 @use Reseau: TCP
 @use "../../Header.jl" Header
-@use ".." GET POST PUT DELETE Response HTTPError TimeoutError Form Multipart escapeuri send parseURI
+@use ".." GET POST PUT DELETE Response HTTPError TimeoutError Form Multipart escapeuri send parseURI retryable
 @use "../body.jl" Body
 @use "../unchunk.jl" Unchunker
 @use "../Session.jl" Session because_closed
@@ -241,12 +241,16 @@ end
 
 @testset "timeouts" begin
   # nothing answers at a non-routable address
-  t, e = elapsed(() -> GET("http://10.255.255.1:81/"; connect_timeout=1))
+  t, e = elapsed(() -> GET("http://10.255.255.1:81/"; connect_timeout=1, retries=0))
   @test e isa TimeoutError && e.phase == :connect
   @test 0.9 < t < 3
   @test occursin("connect timed out", sprint(showerror, e))
+  # retried by default: three tries, each with the full connect budget
+  t, e = elapsed(() -> GET("http://10.255.255.1:81/"; connect_timeout=0.5))
+  @test e isa TimeoutError && e.phase == :connect
+  @test 1.5 < t < 3
   # TCP connects but the TLS handshake never completes: still the connect budget
-  t, e = elapsed(() -> GET("https://127.0.0.1:$SILENT/"; connect_timeout=1))
+  t, e = elapsed(() -> GET("https://127.0.0.1:$SILENT/"; connect_timeout=1, retries=0))
   @test e isa TimeoutError && e.phase == :connect
   @test 0.9 < t < 3
   # the overall timeout bounds connecting too
@@ -413,3 +417,84 @@ end
 
 close(app)
 println("local client tests OK")
+
+# ── retries ──────────────────────────────────────────────────────────
+"A raw server answering the nth request with `script(n)`: (status, extra header lines) or :drop"
+scripted(script) = begin
+  hits = Ref(0)
+  _, port = rawserver() do conn
+    readhead(conn)
+    hits[] += 1
+    r = script(hits[])
+    r === :drop && return
+    status, extra = r
+    body = status == 200 ? "fine" : "busy"
+    write(conn, "HTTP/1.1 $status X\r\n", join(("$h\r\n" for h in extra)),
+          "Content-Length: $(sizeof(body))\r\nConnection: close\r\n\r\n", body)
+  end
+  hits, port
+end
+
+@testset "retries" begin
+  # busy twice, then fine: a GET gets there
+  hits, port = scripted(n -> n < 3 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test read(GET(url(port)), String) == "fine" && hits[] == 3
+  # one more than the default two retries is an error, the last one
+  hits, port = scripted(n -> (503, ["Retry-After: 0"]))
+  @test_throws HTTPError{503} GET(url(port))
+  @test hits[] == 3
+  # retries=0 asks once
+  hits, port = scripted(n -> (503, ["Retry-After: 0"]))
+  @test_throws HTTPError{503} GET(url(port); retries=0)
+  @test hits[] == 1
+  # a POST isn't sent twice unless asked
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test_throws HTTPError{503} POST(url(port); data="x")
+  @test hits[] == 1
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test read(POST(url(port); data="x", retries=1), String) == "fine" && hits[] == 2
+  # nor is a body that can't be re-read
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test_throws HTTPError{503} PUT(url(port); data=IOBuffer("x"))
+  @test hits[] == 1
+  # a client error is the answer, not a hiccup
+  hits, port = scripted(n -> n < 2 ? (404, String[]) : (200, String[]))
+  @test_throws HTTPError{404} GET(url(port))
+  @test hits[] == 1
+  # a dropped connection is retried
+  hits, port = scripted(n -> n < 2 ? :drop : (200, String[]))
+  @test read(GET(url(port)), String) == "fine" && hits[] == 2
+  # a server asking for longer than a retry waits gets its error at once
+  hits, port = scripted(n -> (429, ["Retry-After: 60"]))
+  t, e = elapsed(() -> GET(url(port)))
+  @test e isa HTTPError{429} && hits[] == 1 && t < 1
+  # waits that would overrun `timeout` aren't taken
+  hits, port = scripted(n -> (503, ["Retry-After: 2"]))
+  t, e = elapsed(() -> GET(url(port); timeout=1))
+  @test e isa HTTPError{503} && hits[] == 1 && t < 1
+  # Retry-After is honoured
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 1"]) : (200, String[]))
+  t = @elapsed GET(url(port))
+  @test hits[] == 2 && t >= 1
+  # backoff without Retry-After
+  hits, port = scripted(n -> n < 2 ? (502, String[]) : (200, String[]))
+  @test read(GET(url(port)), String) == "fine" && hits[] == 2
+  # a slow server isn't asked again
+  slowhits = Ref(0)
+  _, slow = rawserver() do conn
+    readhead(conn); slowhits[] += 1; sleep(3)
+  end
+  t, e = elapsed(() -> GET(url(slow); readtimeout=0.5))
+  @test e isa TimeoutError && e.phase == :read && slowhits[] == 1
+  # streamed: retried before `fn` sees a response, never after
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  calls = Ref(0)
+  @test GET(res -> (calls[] += 1; read(res, String)), url(port)) == "fine"
+  @test calls[] == 1 && hits[] == 2
+  hits, port = scripted(n -> (200, String[]))
+  @test_throws EOFError GET(res -> (calls[] += 1; throw(EOFError())), url(port))
+  @test hits[] == 1
+  # what counts as worth another go
+  @test retryable(EOFError()) && !retryable(ArgumentError("x"))
+  @test retryable(TimeoutError(:connect, 1, parseURI("http://x/"))) && !retryable(TimeoutError(:read, 1, parseURI("http://x/")))
+end
