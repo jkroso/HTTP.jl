@@ -74,13 +74,17 @@ send(io::Request, b::Vector{UInt8}) = begin
 end
 send(io::Request, b::Union{String,SubString{String}}) = send(io, Vector{UInt8}(b))
 
+"The `Host` header's value: the port too, unless it's the scheme's default."
+host_header(uri::URI) =
+  uri.port == (uri.protocol == :https ? 443 : 80) || uri.port <= 0 ? uri.host : "$(uri.host):$(uri.port)"
+
 # Defaults only fill in what the caller didn't set. An empty value suppresses a
 # header entirely, e.g. `meta=Header("accept-encoding"=>"")`.
 start_headers(req::Request{verb}) where verb = begin
   req.headers_started = true
   (;sock, meta) = req
   write(sock, verb, ' ', target(req), " HTTP/1.1\r\n")
-  hasheader(meta, "host") || write(sock, "Host: $(req.uri.host)\r\n")
+  hasheader(meta, "host") || write(sock, "Host: ", host_header(req.uri), CRLF)
   hasheader(meta, "user-agent") || write(sock, "User-Agent: Julia/$VERSION\r\n")
   hasheader(meta, "accept-encoding") || write(sock, "Accept-Encoding: gzip\r\n")
   hasheader(meta, "connection") || write(sock, "Connection: Keep-Alive\r\n")

@@ -185,7 +185,7 @@ sleep(0.2)
   GET(url(CAPTURE, "/path?a=1"))
   line, headers = take!(heads)
   @test line == "GET /path?a=1 HTTP/1.1"
-  @test headers == ["Host: 127.0.0.1", "User-Agent: Julia/$VERSION", "Accept-Encoding: gzip",
+  @test headers == ["Host: 127.0.0.1:$CAPTURE", "User-Agent: Julia/$VERSION", "Accept-Encoding: gzip",
                     "Connection: Keep-Alive", "Accept: */*", "Content-Length: 0"]
 end
 
