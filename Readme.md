@@ -105,6 +105,20 @@ keys.
 `send(req, …)` doesn't throw: it returns the `Response` whatever the status, so
 check `res.status` there.
 
+### Sending a body
+
+`send` answers the same way as `GET` and `POST`. It follows redirects, throws
+an `HTTPError` for 4xx/5xx, and retries if the request allows it
+(`POST(url; retries=2)`):
+
+```julia
+res = send(POST("api.example.com/things"), MIME("application/json"), Dict("a" => 1))
+```
+
+A body sent in pieces (`send(req, bytes)` repeatedly, then `close(req)` for the
+response) can't be sent again. So it isn't retried, and following a redirect
+other than 303 raises an error.
+
 ### Redirects
 
 Up to 5 are followed (`max_redirects`). A 303 See Other is fetched with GET and

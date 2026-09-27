@@ -125,8 +125,8 @@ retries: 0.25s, 0.5s (capped at 2s). `connect_timeout`, `readtimeout` and
 `timeout` default to the session's; a `TimeoutError` is never retried, and
 leaves the session to reconnect on its next request.
 
-Like `send(::Request, …)` this returns 4xx/5xx responses rather than throwing.
-`data` may be a `Form` for a multipart upload, in which case `mime` is ignored.
+Like `send(::Request, …)` this follows redirects and throws an `HTTPError`
+for 4xx/5xx. `data` may be a `Form` for a multipart upload, in which case `mime` is ignored.
 """
 function send(s::Session, uri::URI, mime, data; meta=Header(), attempts::Int=3, kwargs...)
   t = timeouts(s; kwargs...)

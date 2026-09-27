@@ -43,23 +43,29 @@ end
   timeouts::Timeouts=Timeouts()
   query::String=""  # already-escaped query params to append to `uri`'s
   stream::Bool=false # leave the response body on the socket for the caller to read
+  retries::Int=0     # how many times `send` may try again (see `with_retries`)
 end
 
 "Does `meta` set `name`? Header keys keep the caller's case, so compare lowercased"
 hasheader(meta, name::AbstractString) = any(k -> lowercase(k) == name, keys(meta))
 
+"""
+Send `data`, as `mime`, as the whole body of `io`, and answer as `GET` and
+`POST` do: redirects followed, an `HTTPError` thrown for 4xx/5xx, and
+`io.retries` more tries (from `POST(url; retries)`) where one is worth it.
+"""
 send(io::Request, mime::MIME, data) = begin
-  io.headers_started || start_headers(io)
   @assert !io.headers_finished
-  bytes = sprint(show, mime, data)
-  hasheader(io.meta, "content-type") || write(io.sock, "Content-Type: $mime\r\n")
-  write(io.sock, "Content-Length: $(sizeof(bytes))\r\n\r\n", bytes)
-  flush(io.sock)
-  parse_response(io.sock; stream=io.stream)
+  if !hasheader(io.meta, "content-type")
+    # in `meta`, so a redirect or retry sends it again
+    io.headers_started ? write(io.sock, "Content-Type: $mime\r\n") :
+                         (io.meta = Header(collect(io.meta)..., "Content-Type" => string(mime)))
+  end
+  deliver(io, Vector{UInt8}(sprint(show, mime, data)))
 end
 
 "Send a `multipart/form-data` body"
-send(io::Request, form::Form) = write_body(io, form)
+send(io::Request, form::Form) = deliver(io, form)
 
 send(io::Request, b::UInt8) = begin
   io.headers_finished || start_body(io)
@@ -115,12 +121,23 @@ write_body(req::Request, form::Form) = begin
   write_body(req, form_body(form))
 end
 
+"""
+Finish a body sent in pieces (`send(req, bytes)`) and answer as `send` does,
+except that it can't be sent again: no retries, and a redirect other than 303
+is an error.
+"""
 Base.close(req::Request) = begin
   req.headers_finished || start_body(req)
   write(req.sock, "0\r\n\r\n")
   flush(req.sock)
-  parse_response(req.sock; stream=req.stream)
+  res, last = follow(parse_response(req.sock; stream=req.stream), req, [req.uri], Streamed())
+  req.sock = last.sock
+  res
 end
+
+"The body of a request sent in pieces: gone once sent, so it can't follow a redirect"
+struct Streamed end
+replayable(::Streamed) = false
 
 @def mutable struct Response <: IO
   status::Int16
@@ -360,6 +377,7 @@ replayable(f::Form) = all(p -> replayable(p.second isa Multipart ? p.second.data
 retryable(e::HTTPError) = e.status in RETRY_STATUS
 retryable(e::TimeoutError) = e.phase == :connect
 retryable(::Union{EOFError,Base.IOError,HostResolvers.OpError}) = true
+retryable(e::SystemError) = e.errnum in (Libc.ECONNRESET, Libc.EPIPE, Libc.ECONNREFUSED, Libc.ECONNABORTED, Libc.ENOTCONN)
 retryable(e::TLS.TLSError) = !occursin("certificate", e.message) # a bad cert stays bad
 retryable(::Any) = false
 
@@ -395,6 +413,32 @@ function with_retries(attempt, retries::Integer, timeout::Real; started=() -> fa
   end
 end
 
+"Seconds left of `t`'s overall budget, or 0 for none"
+remaining(t::Timeouts) = t.deadline > 0 ? max((t.deadline - now_ns()) / 1e9, 0.001) : 0.0
+
+"A fresh connection for `req`, its head not yet written"
+reopen!(req::Request) = begin
+  safeclose(req.sock)
+  req.sock = timed(connect(req.uri, req.timeouts), req.timeouts, req.uri)
+  req.headers_started = req.headers_finished = false
+  req
+end
+
+"""
+Write `data` as `req`'s body and follow the response to its end, retrying
+`req.retries` times (within `req`'s overall timeout) if `data` can be sent
+again. `req.sock` is left as the socket the final response came on.
+"""
+deliver(req::Request, data) = begin
+  tries = 0
+  with_retries(replayable(data) ? req.retries : 0, remaining(req.timeouts)) do _
+    (tries += 1) > 1 && reopen!(req)
+    res, last = follow(write_body(req, data), req, [req.uri], data)
+    req.sock = last.sock
+    res
+  end
+end
+
 # Create convenience methods for the common HTTP verbs so you can simply write `GET("github.com")`
 for f in [:GET, :POST, :PUT, :DELETE]
   v = QuoteNode(f)
@@ -403,7 +447,7 @@ for f in [:GET, :POST, :PUT, :DELETE]
     $f(uri::AbstractString; kwargs...) = $f(parseURI(uri); kwargs...)
     $f(uri::URI; data=nothing, retries::Integer=$n, timeout::Real=0, kwargs...) = begin
       if isnothing(data)
-        $(f in (:GET, :DELETE) ? :(data = "") : :(return request($v, uri; timeout, kwargs...)))
+        $(f in (:GET, :DELETE) ? :(data = "") : :(return request($v, uri; timeout, retries, kwargs...)))
       end
       replayable(data) || (retries = 0)
       with_retries(retries, timeout) do left
@@ -486,6 +530,8 @@ follow(res::Response, req::Request{verb}, seen::Vector, data::Any="") where verb
     end
     # 303 See Other: the answer is elsewhere, fetched with GET. Every other
     # redirect keeps its method and body (as 307/308 must; 301/302 per spec).
+    res.status == 303 || replayable(data) ||
+      error("can't follow a $(res.status) redirect to $(redact(redirect)): the body was streamed and can't be sent again")
     if res.status == 303 && verb != :GET
       req = Request{:GET}(uri=redirect, meta=without(meta, "content-type"), sock=sock,
                           max_redirects=max_redirects-1, timeouts=timeouts, stream=stream)

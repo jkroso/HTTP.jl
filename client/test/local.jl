@@ -415,8 +415,6 @@ end
   @test wait(body.trailers) == Header("a"=>"b")
 end
 
-close(app)
-println("local client tests OK")
 
 # ── retries ──────────────────────────────────────────────────────────
 "A raw server answering the nth request with `script(n)`: (status, extra header lines) or :drop"
@@ -496,6 +494,7 @@ end
   @test hits[] == 1
   # what counts as worth another go
   @test retryable(EOFError()) && !retryable(ArgumentError("x"))
+  @test retryable(SystemError("recv", Libc.ECONNRESET)) && !retryable(SystemError("open", Libc.ENOENT))
   @test retryable(TimeoutError(:connect, 1, parseURI("http://x/"))) && !retryable(TimeoutError(:read, 1, parseURI("http://x/")))
 end
 
@@ -505,6 +504,16 @@ end
     line, headers = readhead(conn)
     n = something(tryparse(Int, something(match(r"(?im)^content-length: *(\d+)", join(headers, "\n")), (captures=["0"],)).captures[1]), 0)
     body = n > 0 ? String(read(conn, n)) : ""
+    if any(h -> occursin(r"(?i)^transfer-encoding: *chunked", h), headers)
+      parts = String[]
+      while true
+        size = parse(Int, strip(readline(conn)), base=16)
+        size == 0 && (readline(conn); break)
+        push!(parts, String(read(conn, size))); readline(conn)
+      end
+      body = join(parts)
+    end
+    isempty(line) && return
     put!(seen, (line, body, headers))
     target = split(line)[2]
     if target == "/see-other"
@@ -533,4 +542,42 @@ end
     line, body, _ = take!(seen)
     @test line == "POST /result HTTP/1.1" && body == "again"
   end
+  # so does `send`, content type and all
+  @test read(send(POST(url(port, "/temporary")), MIME("application/json"), Dict("a"=>1)), String) == "done"
+  take!(seen)
+  line, body, headers = take!(seen)
+  @test line == "POST /result HTTP/1.1" && body == "{\"a\":1}"
+  @test "Content-Type: application/json" in headers
+  # a body sent in pieces follows a 303, but can't be sent to a 307
+  req = POST(url(port, "/see-other")); send(req, "piece one, "); send(req, "piece two")
+  @test read(close(req), String) == "done"
+  @test last(take!(seen)) isa Vector && first(take!(seen)) == "GET /result HTTP/1.1"
+  req = POST(url(port, "/temporary")); send(req, "piece")
+  @test_throws ErrorException close(req)
+  @test take!(seen)[2] == "piece"
 end
+
+@testset "send answers as the verbs do" begin
+  # 4xx/5xx throw, the body still readable
+  e = try send(POST("$BASE/missing"), MIME("application/json"), Dict("a"=>1)) catch e; e end
+  @test e isa HTTPError{404} && read(e, String) == "nope, not here"
+  @test_throws HTTPError{500} send(POST("$BASE/boom"), Form("a" => "b"))
+  # redirects are followed
+  @test read(send(POST("$BASE/redirect"), MIME("text/plain"), "x"), String) == "ok"
+  # and on a Session
+  s = Session(BASE)
+  @test_throws HTTPError{404} send(s, parseURI("$BASE/missing"), MIME("application/json"), Dict("a"=>1))
+  @test parse(send(s, parseURI("$BASE/echo"), MIME("application/json"), Dict("b"=>2))) == Dict("b"=>2)
+  # a POST is retried only when it says so
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test_throws HTTPError{503} send(POST(url(port)), MIME("text/plain"), "x")
+  @test hits[] == 1
+  hits, port = scripted(n -> n < 2 ? (503, ["Retry-After: 0"]) : (200, String[]))
+  @test read(send(POST(url(port); retries=1), MIME("text/plain"), "x"), String) == "fine" && hits[] == 2
+  # a PUT is, by default
+  hits, port = scripted(n -> n < 2 ? :drop : (200, String[]))
+  @test read(send(PUT(url(port)), MIME("text/plain"), "x"), String) == "fine" && hits[] == 2
+end
+
+close(app)
+println("local client tests OK")
