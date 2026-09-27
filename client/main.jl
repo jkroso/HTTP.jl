@@ -484,6 +484,13 @@ follow(res::Response, req::Request{verb}, seen::Vector, data::Any="") where verb
       close(sock)
       sock = timed(connect(redirect, timeouts), timeouts, redirect)
     end
+    # 303 See Other: the answer is elsewhere, fetched with GET. Every other
+    # redirect keeps its method and body (as 307/308 must; 301/302 per spec).
+    if res.status == 303 && verb != :GET
+      req = Request{:GET}(uri=redirect, meta=without(meta, "content-type"), sock=sock,
+                          max_redirects=max_redirects-1, timeouts=timeouts, stream=stream)
+      return follow(write_body(req, ""), req, push!(seen, redirect), "")
+    end
     req = Request{verb}(uri=redirect, meta=meta, sock=sock, max_redirects=max_redirects-1,
                         timeouts=timeouts, stream=stream)
     return follow(write_body(req, data), req, push!(seen, redirect), data)
@@ -492,6 +499,9 @@ follow(res::Response, req::Request{verb}, seen::Vector, data::Any="") where verb
 end
 
 safeclose(io) = try close(io) catch end
+
+"`meta` without the header `name`, however it's cased"
+without(meta, name::AbstractString) = Header((k => v for (k, v) in meta if lowercase(k) != name)...)
 
 canreuse(res::Response, a, b) = !delimited_by_close(res) && canreuse(res.meta, a, b)
 canreuse(meta, a, b) = samehost(a, b) && get(meta, "connection", "") == "keep-alive"

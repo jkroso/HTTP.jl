@@ -105,6 +105,14 @@ keys.
 `send(req, …)` doesn't throw: it returns the `Response` whatever the status, so
 check `res.status` there.
 
+### Redirects
+
+Up to 5 are followed (`max_redirects`). A 303 See Other is fetched with GET and
+no body — the server is pointing you at the result. Every other redirect sends
+the same method and body again: 307 and 308 mean exactly that, and the spec
+says 301 and 302 should too (browsers turn a POST into a GET there; this
+doesn't).
+
 ### Retries
 
 A dropped or refused connection, a connect timeout, or a 408, 429, 502, 503 or

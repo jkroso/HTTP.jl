@@ -498,3 +498,39 @@ end
   @test retryable(EOFError()) && !retryable(ArgumentError("x"))
   @test retryable(TimeoutError(:connect, 1, parseURI("http://x/"))) && !retryable(TimeoutError(:read, 1, parseURI("http://x/")))
 end
+
+@testset "redirects keep the method, except 303" begin
+  seen = Channel{Any}(8)
+  _, port = rawserver() do conn
+    line, headers = readhead(conn)
+    n = something(tryparse(Int, something(match(r"(?im)^content-length: *(\d+)", join(headers, "\n")), (captures=["0"],)).captures[1]), 0)
+    body = n > 0 ? String(read(conn, n)) : ""
+    put!(seen, (line, body, headers))
+    target = split(line)[2]
+    if target == "/see-other"
+      write(conn, "HTTP/1.1 303 See Other\r\nLocation: /result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    elseif target == "/temporary"
+      write(conn, "HTTP/1.1 307 Temporary Redirect\r\nLocation: /result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    elseif target == "/found"
+      write(conn, "HTTP/1.1 302 Found\r\nLocation: /result\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+    else
+      write(conn, "HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\ndone")
+    end
+  end
+  # a POST answered with 303 fetches the result with GET, no body
+  res = POST(url(port, "/see-other"); data="{\"a\":1}", meta=Header("content-type"=>"application/json"))
+  @test read(res, String) == "done"
+  take!(seen)
+  line, body, headers = take!(seen)
+  @test line == "GET /result HTTP/1.1" && body == ""
+  @test !any(h -> startswith(lowercase(h), "content-type"), headers)
+  @test read(POST(url(port, "/see-other"); data="x"), String) == "done"
+  take!(seen); @test first(take!(seen)) == "GET /result HTTP/1.1"
+  # 307 and 302 send the same method and body again
+  for path in ("/temporary", "/found")
+    @test read(POST(url(port, path); data="again"), String) == "done"
+    take!(seen)
+    line, body, _ = take!(seen)
+    @test line == "POST /result HTTP/1.1" && body == "again"
+  end
+end
