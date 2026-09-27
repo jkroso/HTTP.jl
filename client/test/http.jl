@@ -5,16 +5,16 @@ using Test
 @use "github.com/jkroso/JSON.jl/read.jl"
 @use "../unchunk.jl" Unchunker
 @use "../../Header.jl" Header
-@use ".." GET POST PUT DELETE Response send
+@use ".." GET POST PUT DELETE Response HTTPError send
 @use "../Session.jl" Session
 
 @testset "status codes" begin
   @test GET(":8000/status/200").status == 200
   @test GET(":8000/status/201").status == 201
   @test GET(":8000/status/204").status == 204
-  @test_throws Response GET(":8000/status/400")
-  @test_throws Response GET(":8000/status/404")
-  @test_throws Response GET(":8000/status/500")
+  @test_throws HTTPError GET(":8000/status/400")
+  @test_throws HTTPError GET(":8000/status/404")
+  @test_throws HTTPError GET(":8000/status/500")
 end
 
 @testset "GET" begin
@@ -200,14 +200,14 @@ end
   data = parse(res)
   @test data["authenticated"] == true
   @test data["user"] == "user"
-  @test_throws Response GET(":8000/basic-auth/user/passwd")
+  @test_throws HTTPError GET(":8000/basic-auth/user/passwd")
 end
 
 @testset "hidden-basic-auth" begin
   res = GET(":8000/hidden-basic-auth/user/passwd", meta=Header("authorization"=>"Basic dXNlcjpwYXNzd2Q="))
   data = parse(res)
   @test data["authenticated"] == true
-  @test_throws Response GET(":8000/hidden-basic-auth/user/passwd")
+  @test_throws HTTPError GET(":8000/hidden-basic-auth/user/passwd")
 end
 
 @testset "bearer" begin
@@ -215,7 +215,7 @@ end
   data = parse(res)
   @test data["authenticated"] == true
   @test data["token"] == "mytoken"
-  @test_throws Response GET(":8000/bearer")
+  @test_throws HTTPError GET(":8000/bearer")
 end
 
 @testset "etag" begin
